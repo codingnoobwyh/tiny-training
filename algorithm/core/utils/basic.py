@@ -53,9 +53,12 @@ class DistributedMetric(object):
     def update(self, val: Union[torch.Tensor, int, float], delta_n=1):
         val *= delta_n
         if type(val) in [int, float]:
-            val = torch.Tensor(1).fill_(val).cuda()
+            # Keep scalar metrics device-agnostic; the old code hard-coded CUDA here.
+            val = torch.tensor([val], dtype=torch.float32)
         if self.backend == 'ddp':
-            self.count += ddp_reduce_tensor(torch.Tensor(1).fill_(delta_n).cuda(), reduce='sum')
+            # Build the reduction tensor on the same device as the metric value.
+            count_delta = torch.tensor([delta_n], dtype=torch.float32, device=val.device)
+            self.count += ddp_reduce_tensor(count_delta, reduce='sum')
             self.sum += ddp_reduce_tensor(val.detach(), reduce='sum')
         else:
             raise NotImplementedError
@@ -110,5 +113,6 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk=(1,)) -> List[torc
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         else:
-            res.append(torch.zeros(1).cuda() - 1.)
+            # Match the output device instead of assuming CUDA for invalid top-k placeholders.
+            res.append(torch.zeros(1, device=output.device) - 1.)
     return res

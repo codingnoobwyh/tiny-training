@@ -10,6 +10,8 @@ class ClassificationTrainer(BaseTrainer):
     def validate(self):
         self.model.eval()
         val_criterion = self.criterion  # torch.nn.CrossEntropyLoss()
+        # Follow the model device instead of assuming tensors must be moved to CUDA.
+        device = next(self.model.parameters()).device
 
         val_loss = DistributedMetric('val_loss')
         val_top1 = DistributedMetric('val_top1')
@@ -19,7 +21,7 @@ class ClassificationTrainer(BaseTrainer):
                       desc='Validate',
                       disable=dist.rank() > 0 or configs.ray_tune) as t:
                 for images, labels in self.data_loader['val']:
-                    images, labels = images.cuda(), labels.cuda()
+                    images, labels = images.to(device), labels.to(device)
                     # compute output
                     output = self.model(images)
                     loss = val_criterion(output, labels)
@@ -42,6 +44,8 @@ class ClassificationTrainer(BaseTrainer):
     def train_one_epoch(self, epoch):
         self.model.train()
         self.data_loader['train'].sampler.set_epoch(epoch)
+        # Follow the model device instead of assuming tensors must be moved to CUDA.
+        device = next(self.model.parameters()).device
 
         train_loss = DistributedMetric('train_loss')
         train_top1 = DistributedMetric('train_top1')
@@ -50,7 +54,7 @@ class ClassificationTrainer(BaseTrainer):
                   desc='Train Epoch #{}'.format(epoch + 1),
                   disable=dist.rank() > 0 or configs.ray_tune) as t:
             for _, (images, labels) in enumerate(self.data_loader['train']):
-                images, labels = images.cuda(), labels.cuda()
+                images, labels = images.to(device), labels.to(device)
                 self.optimizer.zero_grad()
 
                 output = self.model(images)

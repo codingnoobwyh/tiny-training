@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from ..core.utils.config import configs
-from ..quantize.quantized_ops_diff import ScaledLinear
+# Use package-absolute imports so this module still imports correctly when training is launched as a script.
+from core.utils.config import configs
+from quantize.quantized_ops_diff import ScaledLinear
 
 def _append_flatten(model_q):
     model_q = list(model_q)
@@ -102,5 +103,3 @@ def get_quantized_weight_and_bias(w, b, w_scales, x_scale, n_bit=8):
     b = b.cpu().numpy().astype(np.int32)
 
     return w, b
-
-

@@ -28,11 +28,16 @@ class _QuantizedAvgPoolFunc(torch.autograd.Function):
         ctx.input_shape = x.shape
         assert x.dtype == torch.float32
         x = x.mean([-1, -2], keepdim=True)
+        # 训练版本必须保留可导路径, 只能模拟整数语义, 不能真的走 int()
         return round_tensor(x)
 
     @staticmethod
+    # 平均池化, 每个输入位置的梯度都是一样的, 等于 grad_output / (H * W)
     def backward(ctx, grad_output):
+        # input_shape = [N, C, H, W]
+        # grad_output shape = [N, C, 1, 1]
         input_shape = ctx.input_shape
+        # 等价于 repeat(1, 1, H, W) / (H * W)
         grad_input = grad_output.repeat(1, 1, *input_shape[-2:]) / (input_shape[-1] * input_shape[-2])
         return grad_input
 
@@ -50,6 +55,8 @@ class _QuantizedElementwiseAddFunc(torch.autograd.Function):
         x1 = x1.round()  
         x2 = x2.round()
         assert x1.shape == x2.shape
+
+        # 保存, 用于反向传播
         ctx.save_for_backward(scale_x1, scale_x2, scale_y)
 
         x1 = (x1 - zero_x1) * scale_x1
@@ -62,15 +69,18 @@ class _QuantizedElementwiseAddFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        # only return gradient of zero_y, zero_x1, zero_x2, x1, x2
         scale_x1, scale_x2, scale_y = ctx.saved_tensors
-
+        '''
+        输出零点偏移的梯度, 因为 y = xxx + zero_y, 所以 dy/d(zero_y) = 1
+        dL/d(zero_y) = 
+        '''
         grad_zero_y = grad_output.sum([0, 2, 3])
         grad_sum = grad_output / scale_y.item()
         grad_x1 = grad_sum * scale_x1.item()
         grad_x2 = grad_sum * scale_x2.item()
         grad_zero_x1 = - grad_x1.sum([0, 2, 3])
         grad_zero_x2 = - grad_x2.sum([0, 2, 3])
+        # only return gradient of zero_y, zero_x1, zero_x2, x1, x2
         return grad_x1, grad_x2, grad_zero_x1, grad_zero_x2, grad_zero_y, None, None, None
 
 
@@ -155,6 +165,7 @@ class _QuantizedConv2dFunc(torch.autograd.Function):
         else:
             grad_w = None
 
+        # Keep this import package-absolute so the training entry script can import the quantized ops reliably.
         from core.utils.config import configs
         if configs.backward_config.quantize_gradient:  # perform per-channel quantization
             # quantize grad_x and grad_w
@@ -179,7 +190,8 @@ class QuantizedConv2dDiff(QuantizedConv2d):
         self.register_buffer('zero_x', to_pt(zero_x))
         # self.register_buffer('zero_w', to_pt(zero_w))
         self.register_buffer('zero_y', to_pt(zero_y))
-        from ..core.utils.config import configs
+        # Keep this import package-absolute so the training entry script can import the quantized ops reliably.
+        from core.utils.config import configs
         if configs.backward_config.train_scale:
             print('Note: the scale is also trained...')
             self.register_parameter('effective_scale', torch.nn.Parameter(effective_scale))
@@ -229,4 +241,3 @@ class ScaledLinear(torch.nn.Linear):
             return cos_dist
         else:
             return super().forward(x)
-

@@ -35,7 +35,11 @@ def build_config():  # separate this config requirement so that we can call main
 def main():
     dist.init()
     torch.backends.cudnn.benchmark = True
-    torch.cuda.set_device(dist.local_rank())
+    # The original code assumed CUDA is always available; keep training runnable on CPU-only machines.
+    use_cuda = torch.cuda.is_available()
+    device = torch.device(f'cuda:{dist.local_rank()}' if use_cuda else 'cpu')
+    if use_cuda:
+        torch.cuda.set_device(dist.local_rank())
 
     assert configs.run_dir is not None
     os.makedirs(configs.run_dir, exist_ok=True)
@@ -67,12 +71,15 @@ def main():
         )
 
     # create model
-    model = build_mcu_model().cuda()
+    model = build_mcu_model().to(device)
 
-    if dist.size() > 1:
+    # Only pass CUDA device_ids when CUDA is actually available.
+    if dist.size() > 1 and use_cuda:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[dist.local_rank()])  # , find_unused_parameters=True)
+    elif dist.size() > 1:
+        model = torch.nn.parallel.DistributedDataParallel(model)
 
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = build_optimizer(model)
