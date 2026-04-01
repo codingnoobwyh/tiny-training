@@ -7,7 +7,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from datasets import build_data_loaders
-from models import build_model
+from models import build_model, convert_qat_model_for_inference
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--data-root", default="mnist-demo/artifacts/data")
     parser.add_argument("--output-root", default="mnist-demo/artifacts/runs")
+    parser.add_argument("--converted", action="store_true")
     return parser.parse_args()
 
 
@@ -71,12 +72,10 @@ def main() -> None:
     # 评估完全基于训练阶段落盘的 checkpoint
     checkpoint = load_checkpoint(run_dir / "checkpoint.pt")
     train_config = checkpoint["train_config"]
-    model = build_model(
-        checkpoint["mode"],
-        w_bits=train_config["w_bits"],
-        a_bits=train_config["a_bits"],
-    )
+    model = build_model(checkpoint["mode"])
     model.load_state_dict(checkpoint["model_state_dict"])
+    if args.converted and checkpoint["mode"] == "qat":
+        model = convert_qat_model_for_inference(model)
     criterion = nn.CrossEntropyLoss()
 
     _, test_loader = build_data_loaders(
@@ -87,17 +86,22 @@ def main() -> None:
     )
     metrics = evaluate_model(model, test_loader, criterion)
 
-    # eval_result.json 只保留最终验收时真正关心的指标。
+    # 训练态 QAT 模型和 convert 后量化模型要分开保存，
+    # 否则两次评估会互相覆盖。
+    result_path = run_dir / ("eval_result_converted.json" if args.converted else "eval_result.json")
+    result_mode = f"{checkpoint['mode']}_converted" if args.converted else checkpoint["mode"]
+
+    # eval_result*.json 只保留最终验收时真正关心的指标。
     # 更细的训练过程指标已经在 train_result.json 里。
     eval_result = {
         "run_name": args.run_name,
-        "mode": checkpoint["mode"],
+        "mode": result_mode,
         "test_top1": metrics["top1"],
         "test_loss": metrics["loss"],
     }
-    save_json(run_dir / "eval_result.json", eval_result)
+    save_json(result_path, eval_result)
     print(
-        f"{args.run_name}: mode={checkpoint['mode']} "
+        f"{args.run_name}: mode={result_mode} "
         f"test_top1={metrics['top1']:.2f} test_loss={metrics['loss']:.4f}"
     )
 

@@ -4,7 +4,10 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    # 把多个 run 的最终评估结果并排打印
+    # 把多个 run 的最终评估结果并排打印。
+    # run-names 支持两种写法：
+    # 1. run_name            -> 读取 eval_result.json
+    # 2. run_name:converted  -> 读取 eval_result_converted.json
     parser = argparse.ArgumentParser(description="Compare evaluated MNIST demo runs")
     parser.add_argument("--output-root", default="mnist-demo/artifacts/runs")
     parser.add_argument("--run-names", nargs="+", required=True)
@@ -20,8 +23,13 @@ def main() -> None:
     output_root = Path(args.output_root)
     rows = []
 
-    for run_name in args.run_names:
-        eval_path = output_root / run_name / "eval_result.json"
+    for item in args.run_names:
+        if item.endswith(":converted"):
+            run_name = item[: -len(":converted")]
+            eval_path = output_root / run_name / "eval_result_converted.json"
+        else:
+            run_name = item
+            eval_path = output_root / run_name / "eval_result.json"
         result = load_json(eval_path)
         rows.append(result)
 

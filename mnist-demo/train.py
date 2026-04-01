@@ -9,47 +9,41 @@ from tqdm import tqdm
 
 from datasets import build_data_loaders
 from models import build_model
-from models.ops_quant import QASSGD
 
 
 def parse_args() -> argparse.Namespace:
     # 训练脚本只负责“跑一次训练并落盘”。
     # 对比不同方法时，不在这里混入评估和汇总逻辑，而是分别交给 evaluate.py / compare.py。
     parser = argparse.ArgumentParser(description="Train one MNIST demo run")
-    parser.add_argument("--mode", choices=["float", "quant", "quant_qas"], required=True)
+    parser.add_argument("--mode", choices=["float", "qat"], required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--data-root", default="mnist-demo/artifacts/data")
     parser.add_argument("--output-root", default="mnist-demo/artifacts/runs")
+    parser.add_argument("--init-from", default=None)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--test-batch-size", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--float-lr", type=float, default=0.05)
-    parser.add_argument("--quant-lr", type=float, default=0.05)
-    parser.add_argument("--qas-lr", type=float, default=0.02)
-    parser.add_argument("--w-bits", type=int, default=4)
-    parser.add_argument("--a-bits", type=int, default=4)
+    parser.add_argument("--qat-lr", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
 
 
 def build_optimizer(mode: str, model: nn.Module, args: argparse.Namespace) -> tuple[torch.optim.Optimizer, float]:
-    # 1. float: 浮点模型 + 标准 SGD
-    # 2. quant: 量化训练模型 + 标准 SGD
-    # 3. quant_qas: 量化训练模型 + QASSGD
+    # 当前 demo 只保留两种训练模式：
+    # 1. float: 标准浮点训练
+    # 2. qat: 标准 QAT，前向里 quant -> dequant，再继续浮点训练
     #
-    # QASSGD 本质上仍然是 SGD，只是在真正 step 之前多做一次 pre_step(model)，
-    # 用各层记录下来的量化 scale 去重标定梯度。
+    # 两者在优化器层面都使用普通 SGD。
+    # QAT 和 float 的区别不在 optimizer，而在模型前向是否插入 fake quant。
     if mode == "float":
         lr = args.float_lr
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=args.momentum)
-    elif mode == "quant":
-        lr = args.quant_lr
+    elif mode == "qat":
+        lr = args.qat_lr
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=args.momentum)
-    elif mode == "quant_qas":
-        lr = args.qas_lr
-        optimizer = QASSGD(model.parameters(), lr=lr, momentum=args.momentum)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
     return optimizer, lr
@@ -73,6 +67,49 @@ def save_checkpoint(path: Path, payload: dict) -> None:
     torch.save(payload, path)
 
 
+def load_checkpoint(path: str) -> dict:
+    # 继续训练时统一从这里读取 checkpoint。
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def initialize_model_from_checkpoint(model: nn.Module, init_from: str, target_mode: str) -> dict:
+    # 这个函数负责把“统一的 FP32 起点”分发到不同训练路线：
+    #
+    # Route A: float <- float checkpoint
+    #   直接严格加载，同一个模型结构继续训练。
+    #
+    # Route B: qat <- float checkpoint
+    #   只把共享的卷积/全连接权重拷进原生 QAT 模型，
+    #   observer / fake quant 的状态仍然保持初始值，让 QAT 自己再校准。
+    checkpoint = load_checkpoint(init_from)
+    source_mode = checkpoint["mode"]
+    source_state_dict = checkpoint["model_state_dict"]
+
+    if target_mode == source_mode:
+        model.load_state_dict(source_state_dict, strict=True)
+        return checkpoint
+
+    if target_mode == "qat" and source_mode == "float":
+        target_state_dict = model.state_dict()
+        shared_state_dict = {
+            key: value
+            for key, value in source_state_dict.items()
+            if key in target_state_dict and target_state_dict[key].shape == value.shape
+        }
+        # 这里只加载共享的浮点权重参数，例如 conv1.weight / fc1.bias。
+        # QAT 特有的 observer、scale、zero_point 状态不从 float checkpoint 恢复。
+        missing, unexpected = model.load_state_dict(shared_state_dict, strict=False)
+        print(
+            "Initialized QAT model from float checkpoint: "
+            f"loaded={len(shared_state_dict)} missing={len(missing)} unexpected={len(unexpected)}"
+        )
+        return checkpoint
+
+    raise ValueError(
+        f"Unsupported initialization path: target_mode={target_mode}, source_mode={source_mode}"
+    )
+
+
 def train_one_epoch(
     model: nn.Module,
     data_loader: DataLoader,
@@ -89,32 +126,19 @@ def train_one_epoch(
     progress = tqdm(data_loader, desc=desc, leave=False)
     for images, labels in progress:
         # 标准 PyTorch 训练顺序：
-        # 1. 清空上一步残留梯度
+        # 1. 清空梯度
         # 2. 前向传播
-        # 3. 计算 loss
-        # 4. 反向传播得到 grad
+        # 3. 计算损失
+        # 4. 反向传播
+        # 5. SGD 更新
+        #
+        # 对 float 模式，前向完全是普通浮点网络。
+        # 对 qat 模式，差别只在 model(images) 内部：
+        # prepare_qat 注入的 observer/fake quant 会在前向中自动生效。
         optimizer.zero_grad()
         logits = model(images)
         loss = criterion(logits, labels)
         loss.backward()
-
-        # QAS 和普通 SGD 的分叉点就在这里。
-        #
-        # 对 quant 模式：
-        #   optimizer 是 torch.optim.SGD，没有 pre_step，梯度会直接被 step() 使用。
-        #
-        # 对 quant_qas 模式：
-        #   optimizer 是 QASSGD，会先执行 pre_step(model)。
-        #   pre_step 会遍历模型中的 QuantizedLinear，
-        #   读取这些层在前向里缓存下来的 input / weight / output scale，
-        #   再用这些 scale 去修正当前 batch 的 weight.grad 和 bias.grad。
-        #
-        # 也就是说，这个 demo 里 QAS 不改前向公式，也不改 loss，
-        # 它只改“反向之后、参数更新之前”这一小步。
-        if hasattr(optimizer, "pre_step"):
-            optimizer.pre_step(model)
-
-        # 真正的参数更新仍然走标准的 optimizer.step()。
         optimizer.step()
 
         # 训练时实时累计 loss 和 top1，最后写入 train_result.json。
@@ -143,7 +167,10 @@ def main() -> None:
         args.test_batch_size,
         args.num_workers,
     )
-    model = build_model(args.mode, w_bits=args.w_bits, a_bits=args.a_bits)
+    model = build_model(args.mode)
+    init_meta = None
+    if args.init_from is not None:
+        init_meta = initialize_model_from_checkpoint(model, args.init_from, args.mode)
     criterion = nn.CrossEntropyLoss()
     optimizer, lr = build_optimizer(args.mode, model, args)
     run_dir = get_run_dir(args.output_root, args.run_name)
@@ -175,6 +202,7 @@ def main() -> None:
     train_result = {
         "mode": args.mode,
         "run_name": args.run_name,
+        "init_from": args.init_from,
         "seed": args.seed,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
@@ -182,12 +210,11 @@ def main() -> None:
         "num_workers": args.num_workers,
         "momentum": args.momentum,
         "float_lr": args.float_lr,
-        "quant_lr": args.quant_lr,
-        "qas_lr": args.qas_lr,
-        "w_bits": args.w_bits,
-        "a_bits": args.a_bits,
+        "qat_lr": args.qat_lr,
         "history": history,
     }
+    if init_meta is not None:
+        train_result["init_from_mode"] = init_meta["mode"]
     save_json(run_dir / "train_result.json", train_result)
     save_checkpoint(run_dir / "checkpoint.pt", {
         "mode": args.mode,

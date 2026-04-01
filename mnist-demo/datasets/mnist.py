@@ -8,10 +8,9 @@ def build_data_loaders(
     test_batch_size: int,
     num_workers: int,
 ) -> tuple[DataLoader, DataLoader]:
-    # 这个 demo 只研究三种训练方式的差异：
+    # 这个 demo 只研究两种训练方式的差异：
     # 1. 浮点训练
-    # 2. 量化训练
-    # 3. 量化训练 + QAS
+    # 2. 标准 QAT
     #
     # 所以数据处理保持最简单，只做 ToTensor()。
     # 不额外加归一化和数据增强，是为了避免实验变量太多，
@@ -46,4 +45,3 @@ def build_data_loaders(
         num_workers=num_workers,
     )
     return train_loader, test_loader
-
