@@ -62,6 +62,14 @@ def _project_activation_gradient_per_channel(grad: torch.Tensor, n_bit: int = 8)
     return (grad / scales.view(1, -1, 1, 1)).round() * scales.view(1, -1, 1, 1)
 
 
+def _project_feature_gradient(grad: torch.Tensor, n_bit: int = 8) -> torch.Tensor:
+    # 对线性层输入梯度做重投影时，希望按特征维度处理。
+    # 对 [N, C] 张量来说，先转成 [C, N]，再按“第 0 维是通道”复用同一套逻辑。
+    grad_t = grad.transpose(0, 1)
+    scales = _get_per_channel_scale(grad_t, n_bit=n_bit)
+    return (grad / scales.view(1, -1)).round() * scales.view(1, -1)
+
+
 class _QuantizedReLURange(torch.autograd.Function):
     '''
     1. 下界由 ReLU 语义决定, 直接截到 zero_y
@@ -183,6 +191,56 @@ class _QASConv2dFunc(torch.autograd.Function):
         return grad_x, grad_w, grad_bias, grad_zero_x, grad_zero_y, None, None, None, None, None
 
 
+class _QASLinearFunc(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None,
+        zero_x: torch.Tensor,
+        zero_y: torch.Tensor,
+        effective_scale: torch.Tensor,
+    ) -> torch.Tensor:
+        # 线性层沿用和卷积一样的整数语义：
+        # 1. x / w 先 round 到整数码值
+        # 2. 输入减 zero_x
+        # 3. 做整数域线性变换
+        # 4. 加量化 bias
+        # 5. 乘 effective_scale 映射回输出量化域
+        # 6. 加 zero_y
+        weight_int = _round_tensor(weight)
+        x_int = _round_tensor(x)
+        x_centered = x_int - zero_x.view(1, -1) if zero_x.ndim == 1 else x_int - zero_x
+
+        ctx.save_for_backward(weight_int, effective_scale, x_centered)
+
+        out = F.linear(x_centered, weight_int, None)
+        out = _round_tensor(out)
+        if bias is not None:
+            out = out + bias.view(1, -1)
+        out = _round_tensor(out * effective_scale.view(1, -1))
+        out = out + (zero_y.view(1, -1) if zero_y.ndim == 1 else zero_y)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        weight_int, effective_scale, x_centered = ctx.saved_tensors
+
+        grad_linear_out = grad_output * effective_scale.view(1, -1)
+        grad_bias = grad_linear_out.sum(dim=0)
+        grad_x = grad_linear_out @ weight_int
+        grad_zero_x = -grad_x.sum(dim=0)
+        grad_zero_y = grad_output.sum(dim=0)
+        grad_w = grad_linear_out.transpose(0, 1) @ x_centered
+
+        # 和卷积保持一致：默认把梯度重新投影到 int8 网格。
+        grad_w = _project_gradient_per_channel(grad_w, n_bit=8)
+        grad_x = _project_feature_gradient(grad_x, n_bit=8)
+
+        return grad_x, grad_w, grad_bias, grad_zero_x, grad_zero_y, None
+
+
 class QASConvReLU2d(nn.Conv2d):
     def __init__(
         self,
@@ -248,3 +306,44 @@ class QASConvReLU2d(nn.Conv2d):
             self.groups,
         )
         return _QuantizedReLURange.apply(out, self.zero_y, self.a_bit)
+
+
+class QASLinear(nn.Linear):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool = True,
+        *,
+        zero_x=0.0,
+        zero_y=0.0,
+        effective_scale=None,
+        x_scale=1.0,
+        y_scale=1.0,
+        w_bit: int = 8,
+        a_bit: int = 8,
+    ):
+        super().__init__(in_features=in_features, out_features=out_features, bias=bias)
+
+        self.register_buffer("zero_x", _to_buffer_tensor(zero_x))
+        self.register_buffer("zero_y", _to_buffer_tensor(zero_y))
+        if effective_scale is None:
+            effective_scale = torch.ones(out_features, dtype=torch.float32)
+        self.register_buffer("effective_scale", _to_buffer_tensor(effective_scale))
+        self.register_buffer("x_scale", _to_buffer_tensor(x_scale))
+        self.register_buffer("y_scale", _to_buffer_tensor(y_scale))
+
+        self.w_bit = w_bit
+        self.a_bit = a_bit
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # FC 后面默认不融合 ReLU，因为最后分类头通常直接输出 logits。
+        # 如果中间隐藏层要接 ReLU，可以在网络结构里显式接一个量化 ReLU 模块。
+        return _QASLinearFunc.apply(
+            x,
+            self.weight,
+            self.bias,
+            self.zero_x,
+            self.zero_y,
+            self.effective_scale,
+        )
