@@ -2,6 +2,8 @@
 set -euxo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+DEMO_DIR=$(cd "$SCRIPT_DIR/.." &>/dev/null && pwd)
+ARTIFACTS_DIR="$DEMO_DIR/artifacts"
 
 RUN_NAME=${RUN_NAME:-qat-baseline}
 EPOCHS=${EPOCHS:-5}
@@ -17,6 +19,8 @@ ARGS=(
     "$SCRIPT_DIR/../train.py"
     --mode qat
     --run-name "$RUN_NAME"
+    --data-root "$ARTIFACTS_DIR/data"
+    --output-root "$ARTIFACTS_DIR/runs"
     --epochs "$EPOCHS"
     --batch-size "$BATCH_SIZE"
     --test-batch-size "$TEST_BATCH_SIZE"

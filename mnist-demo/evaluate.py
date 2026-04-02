@@ -7,7 +7,12 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from datasets import build_data_loaders
-from models import build_model, convert_qat_model_for_inference
+from models import build_model, convert_qat_model_for_inference, initialize_quantized_model_from_ptq_checkpoint
+
+
+DEMO_DIR = Path(__file__).resolve().parent
+DEFAULT_DATA_ROOT = DEMO_DIR / "artifacts" / "data"
+DEFAULT_OUTPUT_ROOT = DEMO_DIR / "artifacts" / "runs"
 
 
 def parse_args() -> argparse.Namespace:
@@ -15,9 +20,10 @@ def parse_args() -> argparse.Namespace:
     # 它不参与训练，也不负责多实验对比。
     parser = argparse.ArgumentParser(description="Evaluate one trained MNIST demo run")
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--data-root", default="mnist-demo/artifacts/data")
-    parser.add_argument("--output-root", default="mnist-demo/artifacts/runs")
+    parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--converted", action="store_true")
+    parser.add_argument("--as-quantized-forward", action="store_true")
     return parser.parse_args()
 
 
@@ -71,25 +77,41 @@ def main() -> None:
 
     # 评估完全基于训练阶段落盘的 checkpoint
     checkpoint = load_checkpoint(run_dir / "checkpoint.pt")
-    train_config = checkpoint["train_config"]
-    model = build_model(checkpoint["mode"])
-    model.load_state_dict(checkpoint["model_state_dict"])
-    if args.converted and checkpoint["mode"] == "qat":
+    checkpoint_mode = checkpoint["mode"]
+
+    # 这个入口专门用于排查“PTQ -> 自定义 quantized 前向映射”是否正确。
+    # 打开后：
+    # 1. 输入仍然是一个 ptq checkpoint
+    # 2. 但评估时不直接用原生 PTQ 模型
+    # 3. 而是先构造我们自己的 quantized 模型，再把 PTQ 参数映射进去
+    if args.as_quantized_forward:
+        if checkpoint_mode != "ptq":
+            raise ValueError("--as-quantized-forward 只能用于评估 ptq checkpoint")
+        model = build_model("quantized")
+        initialize_quantized_model_from_ptq_checkpoint(model, checkpoint)
+        data_config = checkpoint["ptq_config"]
+        result_mode = "quantized_forward_from_ptq"
+        result_path = run_dir / "eval_result_quantized_forward.json"
+    else:
+        model = build_model(checkpoint_mode)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        data_config = checkpoint["train_config"]
+        result_mode = checkpoint_mode
+        result_path = run_dir / "eval_result.json"
+
+    if args.converted and checkpoint_mode == "qat":
         model = convert_qat_model_for_inference(model)
+        result_mode = f"{checkpoint_mode}_converted"
+        result_path = run_dir / "eval_result_converted.json"
     criterion = nn.CrossEntropyLoss()
 
     _, test_loader = build_data_loaders(
         args.data_root,
-        train_config["batch_size"],
-        train_config["test_batch_size"],
-        train_config["num_workers"],
+        data_config["batch_size"],
+        data_config["test_batch_size"],
+        data_config["num_workers"],
     )
     metrics = evaluate_model(model, test_loader, criterion)
-
-    # 训练态 QAT 模型和 convert 后量化模型要分开保存，
-    # 否则两次评估会互相覆盖。
-    result_path = run_dir / ("eval_result_converted.json" if args.converted else "eval_result.json")
-    result_mode = f"{checkpoint['mode']}_converted" if args.converted else checkpoint["mode"]
 
     # eval_result*.json 只保留最终验收时真正关心的指标。
     # 更细的训练过程指标已经在 train_result.json 里。

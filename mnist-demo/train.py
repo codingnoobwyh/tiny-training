@@ -8,17 +8,22 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from datasets import build_data_loaders
-from models import build_model
+from models import build_model, initialize_quantized_model_from_ptq_checkpoint
+
+
+DEMO_DIR = Path(__file__).resolve().parent
+DEFAULT_DATA_ROOT = DEMO_DIR / "artifacts" / "data"
+DEFAULT_OUTPUT_ROOT = DEMO_DIR / "artifacts" / "runs"
 
 
 def parse_args() -> argparse.Namespace:
     # 训练脚本只负责“跑一次训练并落盘”。
     # 对比不同方法时，不在这里混入评估和汇总逻辑，而是分别交给 evaluate.py / compare.py。
     parser = argparse.ArgumentParser(description="Train one MNIST demo run")
-    parser.add_argument("--mode", choices=["float", "qat"], required=True)
+    parser.add_argument("--mode", choices=["float", "qat", "quantized"], required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--data-root", default="mnist-demo/artifacts/data")
-    parser.add_argument("--output-root", default="mnist-demo/artifacts/runs")
+    parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--init-from", default=None)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=128)
@@ -27,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--float-lr", type=float, default=0.05)
     parser.add_argument("--qat-lr", type=float, default=0.05)
+    parser.add_argument("--quantized-lr", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
 
@@ -35,6 +41,7 @@ def build_optimizer(mode: str, model: nn.Module, args: argparse.Namespace) -> tu
     # 当前 demo 只保留两种训练模式：
     # 1. float: 标准浮点训练
     # 2. qat: 标准 QAT，前向里 quant -> dequant，再继续浮点训练
+    # 3. quantized: 真实量化语义训练，不再走 fake quant
     #
     # 两者在优化器层面都使用普通 SGD。
     # QAT 和 float 的区别不在 optimizer，而在模型前向是否插入 fake quant。
@@ -43,6 +50,9 @@ def build_optimizer(mode: str, model: nn.Module, args: argparse.Namespace) -> tu
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=args.momentum)
     elif mode == "qat":
         lr = args.qat_lr
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=args.momentum)
+    elif mode == "quantized":
+        lr = args.quantized_lr
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=args.momentum)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -105,6 +115,10 @@ def initialize_model_from_checkpoint(model: nn.Module, init_from: str, target_mo
         )
         return checkpoint
 
+    if target_mode == "quantized" and source_mode == "ptq":
+        initialize_quantized_model_from_ptq_checkpoint(model, checkpoint)
+        return checkpoint
+
     raise ValueError(
         f"Unsupported initialization path: target_mode={target_mode}, source_mode={source_mode}"
     )
@@ -135,6 +149,8 @@ def train_one_epoch(
         # 对 float 模式，前向完全是普通浮点网络。
         # 对 qat 模式，差别只在 model(images) 内部：
         # prepare_qat 注入的 observer/fake quant 会在前向中自动生效。
+        # 对 quantized 模式，前向已经不再是 fake quant，
+        # 而是我们自定义的“整数码值语义 + effective_scale 重定标”。
         optimizer.zero_grad()
         logits = model(images)
         loss = criterion(logits, labels)
@@ -211,6 +227,7 @@ def main() -> None:
         "momentum": args.momentum,
         "float_lr": args.float_lr,
         "qat_lr": args.qat_lr,
+        "quantized_lr": args.quantized_lr,
         "history": history,
     }
     if init_meta is not None:

@@ -9,6 +9,11 @@ from datasets import build_data_loaders
 from models.mnist import FloatMNISTNet, build_native_ptq_prepare_model_from_float_state_dict
 
 
+DEMO_DIR = Path(__file__).resolve().parent
+DEFAULT_DATA_ROOT = DEMO_DIR / "artifacts" / "data"
+DEFAULT_OUTPUT_ROOT = DEMO_DIR / "artifacts" / "runs"
+
+
 def parse_args() -> argparse.Namespace:
     # 把一个已经训练好的 FP32 checkpoint 做成 PTQ 模型。
     # 流程是：
@@ -21,8 +26,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build PTQ model from a float MNIST checkpoint")
     parser.add_argument("--init-from", required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--data-root", default="mnist-demo/artifacts/data")
-    parser.add_argument("--output-root", default="mnist-demo/artifacts/runs")
+    parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--test-batch-size", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=2)

@@ -3,13 +3,17 @@ import json
 from pathlib import Path
 
 
+DEMO_DIR = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_ROOT = DEMO_DIR / "artifacts" / "runs"
+
+
 def parse_args() -> argparse.Namespace:
     # 把多个 run 的最终评估结果并排打印。
     # run-names 支持两种写法：
     # 1. run_name            -> 读取 eval_result.json
     # 2. run_name:converted  -> 读取 eval_result_converted.json
     parser = argparse.ArgumentParser(description="Compare evaluated MNIST demo runs")
-    parser.add_argument("--output-root", default="mnist-demo/artifacts/runs")
+    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--run-names", nargs="+", required=True)
     return parser.parse_args()
 

@@ -27,6 +27,16 @@ def _as_channel_bias(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
+def _as_feature_bias(x: torch.Tensor) -> torch.Tensor:
+    # 线性层里零点可能是标量，也可能按输出/输入特征存成一维向量。
+    # 统一扩成 [1, C]，方便和 [N, C] 张量广播。
+    if x.ndim == 0:
+        return x
+    if x.ndim == 1:
+        return x.view(1, -1)
+    return x
+
+
 def _get_per_channel_scale(x: torch.Tensor, n_bit: int = 8, eps: float = 1e-6) -> torch.Tensor:
     # 按第 0 维逐通道取最大绝对值, 再映射到 int8 网格
     #
@@ -80,6 +90,22 @@ class _QuantizedReLURange(torch.autograd.Function):
         qmax = 2 ** (a_bit - 1) - 1
         # zero_y 对应“实数 0”在输出量化域里的码值, 因此量化版 ReLU 在码值域里的效果就是 clamp(min=zero_y, max=qmax)
         lower = _as_channel_bias(zero_y)
+        binary_mask = (lower <= x) & (x <= qmax)
+        ctx.save_for_backward(binary_mask)
+        upper = torch.full_like(x, qmax)
+        return torch.minimum(torch.maximum(x, lower), upper)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        (binary_mask,) = ctx.saved_tensors
+        return grad_output * binary_mask, None, None
+
+
+class _QuantizedFeatureReLURange(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, zero_y: torch.Tensor, a_bit: int) -> torch.Tensor:
+        qmax = 2 ** (a_bit - 1) - 1
+        lower = _as_feature_bias(zero_y)
         binary_mask = (lower <= x) & (x <= qmax)
         ctx.save_for_backward(binary_mask)
         upper = torch.full_like(x, qmax)
@@ -211,7 +237,7 @@ class _QASLinearFunc(torch.autograd.Function):
         # 6. 加 zero_y
         weight_int = _round_tensor(weight)
         x_int = _round_tensor(x)
-        x_centered = x_int - zero_x.view(1, -1) if zero_x.ndim == 1 else x_int - zero_x
+        x_centered = x_int - _as_feature_bias(zero_x)
 
         ctx.save_for_backward(weight_int, effective_scale, x_centered)
 
@@ -220,7 +246,7 @@ class _QASLinearFunc(torch.autograd.Function):
         if bias is not None:
             out = out + bias.view(1, -1)
         out = _round_tensor(out * effective_scale.view(1, -1))
-        out = out + (zero_y.view(1, -1) if zero_y.ndim == 1 else zero_y)
+        out = out + _as_feature_bias(zero_y)
         return out
 
     @staticmethod
@@ -347,3 +373,16 @@ class QASLinear(nn.Linear):
             self.zero_y,
             self.effective_scale,
         )
+
+
+class QASLinearReLU(QASLinear):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = _QASLinearFunc.apply(
+            x,
+            self.weight,
+            self.bias,
+            self.zero_x,
+            self.zero_y,
+            self.effective_scale,
+        )
+        return _QuantizedFeatureReLURange.apply(out, self.zero_y, self.a_bit)
