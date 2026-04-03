@@ -93,7 +93,8 @@ def main() -> None:
         result_mode = "quantized_forward_from_ptq"
         result_path = run_dir / "eval_result_quantized_forward.json"
     else:
-        model = build_model(checkpoint_mode)
+        model_mode = "quantized" if checkpoint_mode == "qas" else checkpoint_mode
+        model = build_model(model_mode)
         model.load_state_dict(checkpoint["model_state_dict"])
         data_config = checkpoint["train_config"]
         result_mode = checkpoint_mode

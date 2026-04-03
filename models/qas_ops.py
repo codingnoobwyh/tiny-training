@@ -386,3 +386,33 @@ class QASLinearReLU(QASLinear):
             self.effective_scale,
         )
         return _QuantizedFeatureReLURange.apply(out, self.zero_y, self.a_bit)
+
+
+class QASSGD(torch.optim.SGD):
+    def pre_step(self, model: torch.nn.Module) -> None:
+        # QAS 的核心不在前向，而是在真正 step 前按量化 scale 重标定梯度。
+        # 这里沿用原仓库 sgd_scale.py 的思路：
+        # effective_scale = x_scale * w_scale / y_scale
+        # 因此可反推出 w_scale = effective_scale * y_scale / x_scale
+        #
+        # 如果不做这一步，真实量化训练里 weight.grad 往往非常小，
+        # 一步 step 后根本跨不过整数网格，前向 round 之后等于没更新。
+        for module in model.modules():
+            # 遍历模型每一层, 只对我们自定义的量化层做梯度重标定
+            if not isinstance(module, (QASConvReLU2d, QASLinear, QASLinearReLU)):
+                continue
+            # 拿出这一层的 3 个量化缩放因子
+            x_scale = module.x_scale.detach().to(torch.float32)
+            y_scale = module.y_scale.detach().to(torch.float32)
+            effective_scale = module.effective_scale.detach().to(torch.float32)
+            # 反推这个层的权重 scale
+            w_scale = effective_scale * y_scale / x_scale
+
+            if module.weight.grad is not None:
+                # 把 w_scale reshape 成和梯度一样的形状，方便广播计算
+                view_shape = [w_scale.shape[0]] + [1] * (module.weight.grad.dim() - 1)
+                # 梯度 除以 (w_scale)²
+                module.weight.grad.data.div_(w_scale.view(*view_shape) ** 2)
+
+            if module.bias is not None and module.bias.grad is not None:
+                module.bias.grad.data.div_((effective_scale * y_scale) ** 2)

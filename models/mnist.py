@@ -264,6 +264,6 @@ def build_model(mode: str) -> nn.Module:
         return FloatMNISTNet()
     if mode == "qat":
         return build_native_qat_model()
-    if mode == "quantized":
+    if mode in {"quantized", "qas"}:
         return QuantizedMNISTNet()
     raise ValueError(f"Unsupported mode: {mode}")
