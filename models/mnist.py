@@ -97,6 +97,12 @@ class QuantizedMNISTNet(nn.Module):
         super().__init__()
         # 这条模型线服务于“real quantized training”。
         # 卷积和第一层全连接都融合了量化版 ReLU，最后分类层保持线性输出 logits。
+        #
+        # 注意：这里的输入不再直接把 [0, 1] 浮点图像送进第一层卷积。
+        # 为了和原生 PTQ 的 QuantStub 对齐，forward 最开始会先根据
+        # input_scale / input_zero_point 把浮点图像量化成输入码值。
+        self.register_buffer("input_scale", torch.tensor(1.0, dtype=torch.float32))
+        self.register_buffer("input_zero_point", torch.tensor(0.0, dtype=torch.float32))
         self.conv1 = QASConvReLU2d(1, 16, kernel_size=3, stride=1, padding=1)
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.conv2 = QASConvReLU2d(16, 32, kernel_size=3, stride=1, padding=1)
@@ -105,7 +111,26 @@ class QuantizedMNISTNet(nn.Module):
         self.fc1 = QASLinearReLU(32 * 7 * 7, 128)
         self.fc2 = QASLinear(128, 10)
 
+    def quantize_input(self, x: torch.Tensor) -> torch.Tensor:
+        # 原生 PTQ 模型在第一层前会先经过 QuantStub：
+        # x_q = round(x_fp / input_scale) + input_zero_point
+        #
+        # 如果少了这一步，MNIST 图像 [0, 1] 直接 round 后几乎只剩 0/1，
+        # 动态范围会比原生 PTQ 的真实输入码值小很多，第一层开始就对不上。
+        x_q = torch.round(x / self.input_scale) + self.input_zero_point
+
+        # 当前 PTQ 路线使用 fbgemm 默认配置，输入激活实际是 reduce_range 的 quint8。
+        # 因此这里先按 [0, 127] 截断，和当前原生 PTQ 路线对齐。
+        return x_q.clamp(0, 127)
+
+    def dequantize_output(self, x: torch.Tensor) -> torch.Tensor:
+        # 最后一层 fc2 的输出仍然是量化码值语义。
+        # 为了和原生 PTQ 模型里的 dequant 对齐，也为了让后续 loss 直接工作在实数域，
+        # 这里把最终输出按 y = (q - zero_point) * scale 还原成浮点 logits。
+        return (x - self.fc2.zero_y) * self.fc2.y_scale
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.quantize_input(x)
         x = self.conv1(x)
         x = self.pool1(x)
         x = self.conv2(x)
@@ -113,6 +138,7 @@ class QuantizedMNISTNet(nn.Module):
         x = self.flatten(x)
         x = self.fc1(x)
         x = self.fc2(x)
+        x = self.dequantize_output(x)
         return x
 
 
@@ -183,6 +209,8 @@ def initialize_quantized_model_from_ptq_checkpoint(model: nn.Module, checkpoint:
 
     quant_scale = state["quant.scale"].to(torch.float32)
     quant_zero = state["quant.zero_point"].to(torch.float32)
+    _copy_buffer_value(model.input_scale, quant_scale)
+    _copy_buffer_value(model.input_zero_point, quant_zero)
 
     conv1_w_q = state["conv1.weight"]
     conv1_w_scale = conv1_w_q.q_per_channel_scales().to(torch.float32)
