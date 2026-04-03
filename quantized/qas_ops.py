@@ -3,6 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+INT8_QMIN = -128
+INT8_QMAX = 127
+INT32_QMIN = -2147483648
+INT32_QMAX = 2147483647
+
+
 def _to_buffer_tensor(value, dtype=torch.float32) -> torch.Tensor:
     # 量化参数既可能是 Python 标量, 也可能已经是 tensor
     # 这里统一转成 float tensor, 方便后面 register_buffer
@@ -15,6 +21,16 @@ def _round_tensor(x: torch.Tensor) -> torch.Tensor:
     # 真实量化训练里, 很多中间量在“语义上”已经是整数
     # 但为了保留 autograd 路径, 这里仍用 float tensor 承载整数值
     return x.round()
+
+
+def _round_and_clamp_int8(x: torch.Tensor) -> torch.Tensor:
+    # 严格的 int8 码值语义不只是“接近整数”，还要始终落在合法码值域内。
+    return x.round().clamp(INT8_QMIN, INT8_QMAX)
+
+
+def _round_and_clamp_int32(x: torch.Tensor) -> torch.Tensor:
+    # bias 工作在整数累加域，这里用 int32 范围约束。
+    return x.round().clamp(INT32_QMIN, INT32_QMAX)
 
 
 def _as_channel_bias(x: torch.Tensor) -> torch.Tensor:
@@ -145,7 +161,7 @@ class _QASConv2dFunc(torch.autograd.Function):
         ctx.input_size = x.shape
         ctx.weight_size = weight.shape
 
-        weight_int = _round_tensor(weight)
+        weight_int = _round_and_clamp_int8(weight)
         x_int = _round_tensor(x)
         x_centered = x_int - _as_channel_bias(zero_x)
 
@@ -235,7 +251,7 @@ class _QASLinearFunc(torch.autograd.Function):
         # 4. 加量化 bias
         # 5. 乘 effective_scale 映射回输出量化域
         # 6. 加 zero_y
-        weight_int = _round_tensor(weight)
+        weight_int = _round_and_clamp_int8(weight)
         x_int = _round_tensor(x)
         x_centered = x_int - _as_feature_bias(zero_x)
 
@@ -247,6 +263,9 @@ class _QASLinearFunc(torch.autograd.Function):
             out = out + bias.view(1, -1)
         out = _round_tensor(out * effective_scale.view(1, -1))
         out = out + _as_feature_bias(zero_y)
+        # 最后一层线性输出也必须保持在合法 int8 码值域，
+        # 否则后续 dequant 前就已经比真实量化 kernel 更宽松了。
+        out = out.clamp(INT8_QMIN, INT8_QMAX)
         return out
 
     @staticmethod
@@ -416,3 +435,19 @@ class QASSGD(torch.optim.SGD):
 
             if module.bias is not None and module.bias.grad is not None:
                 module.bias.grad.data.div_((effective_scale * y_scale) ** 2)
+
+
+def project_quantized_parameters(model: torch.nn.Module) -> None:
+    # 参数投影放在 optimizer.step() 之后，而不是 backward 里。
+    # 这样职责清楚：
+    # 1. backward 只负责算梯度
+    # 2. optimizer.step() 负责更新浮点参数副本
+    # 3. 这里再把参数拉回“合法量化码值域”
+    with torch.no_grad():
+        for module in model.modules():
+            if not isinstance(module, (QASConvReLU2d, QASLinear, QASLinearReLU)):
+                continue
+
+            module.weight.data.copy_(_round_and_clamp_int8(module.weight.data))
+            if module.bias is not None:
+                module.bias.data.copy_(_round_and_clamp_int32(module.bias.data))

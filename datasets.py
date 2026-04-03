@@ -8,17 +8,13 @@ def build_data_loaders(
     test_batch_size: int,
     num_workers: int,
 ) -> tuple[DataLoader, DataLoader]:
-    # 这个 demo 只研究两种训练方式的差异：
-    # 1. 浮点训练
-    # 2. 标准 QAT
-    #
-    # 所以数据处理保持最简单，只做 ToTensor()。
-    # 不额外加归一化和数据增强，是为了避免实验变量太多，
-    # 这样更容易把精度差异归因到模型/优化方式本身。
+    # 数据层保持最小，只做 ToTensor()。
+    # 这里不引入数据增强和额外归一化，避免把主比较从
+    # “训练路线差异”混成“数据 recipe 差异”。
     transform = transforms.ToTensor()
 
     # train=True 读取训练集，train=False 读取测试集。
-    # train.py 只消费训练集，evaluate.py 只消费测试集。
+    # 各 runner 会按自己的职责分别消费 train/test loader。
     train_set = datasets.MNIST(
         root=data_root,
         train=True,
