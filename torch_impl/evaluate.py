@@ -1,19 +1,24 @@
 import argparse
+import sys
 from pathlib import Path
 
 from torch import nn
 
-from datasets import build_data_loaders
-from baseline.models import FloatMNISTNet, build_native_ptq_converted_model, build_native_qat_model
-from quantized.models import (
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from torch_impl.datasets import build_data_loaders
+from torch_impl.baseline.models import FloatMNISTNet, build_native_ptq_converted_model, build_native_qat_model
+from torch_impl.quantized.models import (
     QuantizedMNISTNet,
     initialize_quantized_model_from_ptq_checkpoint,
 )
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_ROOT = PROJECT_DIR / "artifacts" / "data"
-DEFAULT_OUTPUT_ROOT = PROJECT_DIR / "artifacts" / "runs"
+TORCH_IMPL_DIR = Path(__file__).resolve().parent
+ROOT_DIR = TORCH_IMPL_DIR.parent
+DEFAULT_DATA_ROOT = ROOT_DIR / "data"
+DEFAULT_OUTPUT_ROOT = TORCH_IMPL_DIR / "artifacts" / "runs"
 
 
 def get_run_dir(output_root: str, run_name: str) -> Path:

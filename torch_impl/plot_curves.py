@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_ROOT = PROJECT_DIR / "artifacts" / "runs"
+TORCH_IMPL_DIR = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_ROOT = TORCH_IMPL_DIR / "artifacts" / "runs"
 DEFAULT_COMPARE_RUNS = ["fp", "qat", "quant", "qas"]
 
 

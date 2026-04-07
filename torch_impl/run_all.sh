@@ -2,7 +2,9 @@
 set -euxo pipefail
 
 PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+ROOT_DIR=$(cd "$PROJECT_DIR/.." &>/dev/null && pwd)
 ARTIFACTS_DIR="$PROJECT_DIR/artifacts"
+DATA_DIR="$ROOT_DIR/data"
 
 BASE_RUN_NAME=${BASE_RUN_NAME:-fp-base}
 FP_RUN_NAME=${FP_RUN_NAME:-fp}
@@ -19,9 +21,9 @@ TEST_BATCH_SIZE=${TEST_BATCH_SIZE:-512}
 NUM_WORKERS=${NUM_WORKERS:-2}
 CALIBRATION_BATCHES=${CALIBRATION_BATCHES:-32}
 
-FLOAT_LR=${FLOAT_LR:-0.01}
-QAT_LR=${QAT_LR:-0.01}
-QUANTIZED_LR=${QUANTIZED_LR:-0.01}
+FLOAT_LR=${FLOAT_LR:-0.05}
+QAT_LR=${QAT_LR:-0.05}
+QUANTIZED_LR=${QUANTIZED_LR:-0.05}
 QAS_LR=${QAS_LR:-$QUANTIZED_LR}
 SEED=${SEED:-0}
 
@@ -30,10 +32,12 @@ PTQ_CKPT="$ARTIFACTS_DIR/runs/${PTQ_RUN_NAME}/checkpoint.pt"
 
 cd "$PROJECT_DIR"
 
-python "$PROJECT_DIR/train.py" \
+cd "$ROOT_DIR"
+
+python -m torch_impl.train \
   --mode float \
   --run-name "$BASE_RUN_NAME" \
-  --data-root "$ARTIFACTS_DIR/data" \
+  --data-root "$DATA_DIR" \
   --output-root "$ARTIFACTS_DIR/runs" \
   --epochs "$BASE_EPOCHS" \
   --batch-size "$BATCH_SIZE" \
@@ -42,10 +46,10 @@ python "$PROJECT_DIR/train.py" \
   --float-lr "$FLOAT_LR" \
   --seed "$SEED"
 
-python "$PROJECT_DIR/train.py" \
+python -m torch_impl.train \
   --mode float \
   --run-name "$FP_RUN_NAME" \
-  --data-root "$ARTIFACTS_DIR/data" \
+  --data-root "$DATA_DIR" \
   --output-root "$ARTIFACTS_DIR/runs" \
   --init-from "$BASE_CKPT" \
   --epochs "$ROUTE_EPOCHS" \
@@ -55,10 +59,10 @@ python "$PROJECT_DIR/train.py" \
   --float-lr "$FLOAT_LR" \
   --seed "$SEED"
 
-python "$PROJECT_DIR/train.py" \
+python -m torch_impl.train \
   --mode qat \
   --run-name "$QAT_RUN_NAME" \
-  --data-root "$ARTIFACTS_DIR/data" \
+  --data-root "$DATA_DIR" \
   --output-root "$ARTIFACTS_DIR/runs" \
   --init-from "$BASE_CKPT" \
   --epochs "$ROUTE_EPOCHS" \
@@ -68,20 +72,20 @@ python "$PROJECT_DIR/train.py" \
   --qat-lr "$QAT_LR" \
   --seed "$SEED"
 
-python -m baseline.ptq \
+python -m torch_impl.baseline.ptq \
   --init-from "$BASE_CKPT" \
   --run-name "$PTQ_RUN_NAME" \
-  --data-root "$ARTIFACTS_DIR/data" \
+  --data-root "$DATA_DIR" \
   --output-root "$ARTIFACTS_DIR/runs" \
   --batch-size "$BATCH_SIZE" \
   --test-batch-size "$TEST_BATCH_SIZE" \
   --num-workers "$NUM_WORKERS" \
   --calibration-batches "$CALIBRATION_BATCHES"
 
-python "$PROJECT_DIR/train.py" \
+python -m torch_impl.train \
   --mode quantized \
   --run-name "$QUANT_RUN_NAME" \
-  --data-root "$ARTIFACTS_DIR/data" \
+  --data-root "$DATA_DIR" \
   --output-root "$ARTIFACTS_DIR/runs" \
   --init-from "$PTQ_CKPT" \
   --epochs "$ROUTE_EPOCHS" \
@@ -91,10 +95,10 @@ python "$PROJECT_DIR/train.py" \
   --quantized-lr "$QUANTIZED_LR" \
   --seed "$SEED"
 
-python "$PROJECT_DIR/train.py" \
+python -m torch_impl.train \
   --mode qas \
   --run-name "$QAS_RUN_NAME" \
-  --data-root "$ARTIFACTS_DIR/data" \
+  --data-root "$DATA_DIR" \
   --output-root "$ARTIFACTS_DIR/runs" \
   --init-from "$PTQ_CKPT" \
   --epochs "$ROUTE_EPOCHS" \
@@ -104,14 +108,14 @@ python "$PROJECT_DIR/train.py" \
   --qas-lr "$QAS_LR" \
   --seed "$SEED"
 
-python "$PROJECT_DIR/evaluate.py" --run-name "$BASE_RUN_NAME" --data-root "$ARTIFACTS_DIR/data" --output-root "$ARTIFACTS_DIR/runs"
-python "$PROJECT_DIR/evaluate.py" --run-name "$FP_RUN_NAME" --data-root "$ARTIFACTS_DIR/data" --output-root "$ARTIFACTS_DIR/runs"
-python "$PROJECT_DIR/evaluate.py" --run-name "$QAT_RUN_NAME" --data-root "$ARTIFACTS_DIR/data" --output-root "$ARTIFACTS_DIR/runs"
-python "$PROJECT_DIR/evaluate.py" --run-name "$PTQ_RUN_NAME" --data-root "$ARTIFACTS_DIR/data" --output-root "$ARTIFACTS_DIR/runs"
-python "$PROJECT_DIR/evaluate.py" --run-name "$QUANT_RUN_NAME" --data-root "$ARTIFACTS_DIR/data" --output-root "$ARTIFACTS_DIR/runs"
-python "$PROJECT_DIR/evaluate.py" --run-name "$QAS_RUN_NAME" --data-root "$ARTIFACTS_DIR/data" --output-root "$ARTIFACTS_DIR/runs"
+python -m torch_impl.evaluate --run-name "$BASE_RUN_NAME" --data-root "$DATA_DIR" --output-root "$ARTIFACTS_DIR/runs"
+python -m torch_impl.evaluate --run-name "$FP_RUN_NAME" --data-root "$DATA_DIR" --output-root "$ARTIFACTS_DIR/runs"
+python -m torch_impl.evaluate --run-name "$QAT_RUN_NAME" --data-root "$DATA_DIR" --output-root "$ARTIFACTS_DIR/runs"
+python -m torch_impl.evaluate --run-name "$PTQ_RUN_NAME" --data-root "$DATA_DIR" --output-root "$ARTIFACTS_DIR/runs"
+python -m torch_impl.evaluate --run-name "$QUANT_RUN_NAME" --data-root "$DATA_DIR" --output-root "$ARTIFACTS_DIR/runs"
+python -m torch_impl.evaluate --run-name "$QAS_RUN_NAME" --data-root "$DATA_DIR" --output-root "$ARTIFACTS_DIR/runs"
 
-python "$PROJECT_DIR/compare.py" \
+python -m torch_impl.compare \
   --output-root "$ARTIFACTS_DIR/runs" \
   --run-names \
   "$BASE_RUN_NAME" \

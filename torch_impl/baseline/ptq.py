@@ -1,16 +1,20 @@
 import argparse
+import sys
 import torch
 from torch import nn
-
-from datasets import build_data_loaders
 from pathlib import Path
 
-from baseline.models import build_native_ptq_prepare_model_from_float_state_dict
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from torch_impl.datasets import build_data_loaders
+from torch_impl.baseline.models import build_native_ptq_prepare_model_from_float_state_dict
 
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_DATA_ROOT = PROJECT_DIR / "artifacts" / "data"
-DEFAULT_OUTPUT_ROOT = PROJECT_DIR / "artifacts" / "runs"
+TORCH_IMPL_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = TORCH_IMPL_DIR.parent
+DEFAULT_DATA_ROOT = ROOT_DIR / "data"
+DEFAULT_OUTPUT_ROOT = TORCH_IMPL_DIR / "artifacts" / "runs"
 
 
 def get_run_dir(output_root: str, run_name: str) -> Path:
