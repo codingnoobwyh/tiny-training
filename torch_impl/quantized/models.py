@@ -25,7 +25,7 @@ class QuantizedMNISTNet(nn.Module):
         # 第一层输入必须先按 PTQ 确定好的输入量化参数编码成码值。
         # 如果这里直接 round 原始 [0,1] 图像，整个真实量化前向都会从第一层开始失真。
         x_q = torch.round(x / self.input_scale) + self.input_zero_point
-        return x_q.clamp(0, 127)
+        return x_q.clamp(-128, 127)
 
     def dequantize_output(self, x: torch.Tensor) -> torch.Tensor:
         return (x - self.fc2.zero_y) * self.fc2.y_scale
