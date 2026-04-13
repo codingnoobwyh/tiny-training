@@ -94,6 +94,50 @@ def conv2d_3x3_int(
     return round_clip_int8(output)
 
 
+def conv2d_3x3_int_backward(
+    grad_output: np.ndarray,
+    x_q: np.ndarray,
+    weight: np.ndarray,
+    bias: Optional[np.ndarray],
+    zero_x: np.ndarray,
+    effective_scale: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """
+    3x3 same padding 卷积的反向传播。
+
+    当前实现对齐 torch_impl 的 backward 语义：
+    - 忽略 round 的导数
+    - zero_y 不参与梯度
+    - 主链梯度先乘 effective_scale
+    """
+    N, C_in, H_in, W_in = x_q.shape
+    C_out, _, _, _ = weight.shape
+
+    grad_conv_out = grad_output.astype(np.float32) * effective_scale.reshape(1, -1, 1, 1).astype(np.float32)
+    x_centered = x_q.astype(np.float32) - np.float32(zero_x)
+    weight_float = weight.astype(np.float32)
+
+    grad_input = np.zeros_like(x_centered, dtype=np.float32)
+    grad_weight = np.zeros_like(weight_float, dtype=np.float32)
+    grad_bias = grad_conv_out.sum(axis=(0, 2, 3)).astype(np.float32) if bias is not None else None
+
+    for n in range(N):
+        for c_out in range(C_out):
+            for h_out in range(H_in):
+                for w_out in range(W_in):
+                    grad_value = grad_conv_out[n, c_out, h_out, w_out]
+                    for c_in in range(C_in):
+                        for kh in range(3):
+                            for kw in range(3):
+                                h_in_idx = h_out - 1 + kh
+                                w_in_idx = w_out - 1 + kw
+                                if 0 <= h_in_idx < H_in and 0 <= w_in_idx < W_in:
+                                    grad_weight[c_out, c_in, kh, kw] += grad_value * x_centered[n, c_in, h_in_idx, w_in_idx]
+                                    grad_input[n, c_in, h_in_idx, w_in_idx] += grad_value * weight_float[c_out, c_in, kh, kw]
+
+    return grad_input, grad_weight, grad_bias
+
+
 def relu_int(
     x_q: np.ndarray,
     zero_y: np.ndarray,
@@ -153,6 +197,44 @@ def maxpool2d_2x2_int(x_q: np.ndarray) -> np.ndarray:
     return output
 
 
+def maxpool2d_2x2_int_backward(
+    grad_output: np.ndarray,
+    x_q: np.ndarray,
+) -> np.ndarray:
+    """
+    2x2 最大池化的反向传播。
+    """
+    N, C, H_in, W_in = x_q.shape
+    _, _, H_out, W_out = grad_output.shape
+    grad_input = np.zeros_like(x_q, dtype=np.float32)
+
+    for n in range(N):
+        for c in range(C):
+            for h_out in range(H_out):
+                for w_out in range(W_out):
+                    h_start = h_out * 2
+                    w_start = w_out * 2
+
+                    window = np.array([
+                        x_q[n, c, h_start, w_start],
+                        x_q[n, c, h_start, w_start + 1],
+                        x_q[n, c, h_start + 1, w_start],
+                        x_q[n, c, h_start + 1, w_start + 1],
+                    ])
+                    max_index = int(np.argmax(window))
+
+                    if max_index == 0:
+                        grad_input[n, c, h_start, w_start] += grad_output[n, c, h_out, w_out]
+                    elif max_index == 1:
+                        grad_input[n, c, h_start, w_start + 1] += grad_output[n, c, h_out, w_out]
+                    elif max_index == 2:
+                        grad_input[n, c, h_start + 1, w_start] += grad_output[n, c, h_out, w_out]
+                    else:
+                        grad_input[n, c, h_start + 1, w_start + 1] += grad_output[n, c, h_out, w_out]
+
+    return grad_input
+
+
 def linear_int(
     x_q: np.ndarray,
     weight: np.ndarray,
@@ -198,6 +280,27 @@ def linear_int(
     return round_clip_int8(output)
 
 
+def linear_int_backward(
+    grad_output: np.ndarray,
+    x_q: np.ndarray,
+    weight: np.ndarray,
+    bias: Optional[np.ndarray],
+    zero_x: np.ndarray,
+    effective_scale: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """
+    全连接层反向传播。
+    """
+    grad_linear_out = grad_output.astype(np.float32) * effective_scale.reshape(1, -1).astype(np.float32)
+    x_centered = x_q.astype(np.float32) - np.float32(zero_x)
+    weight_float = weight.astype(np.float32)
+
+    grad_input = grad_linear_out @ weight_float
+    grad_weight = grad_linear_out.T @ x_centered
+    grad_bias = grad_linear_out.sum(axis=0) if bias is not None else None
+    return grad_input.astype(np.float32), grad_weight.astype(np.float32), None if grad_bias is None else grad_bias.astype(np.float32)
+
+
 def flatten_int(x_q: np.ndarray) -> np.ndarray:
     """
     扁平化
@@ -210,3 +313,25 @@ def flatten_int(x_q: np.ndarray) -> np.ndarray:
     """
     # 扁平化为 (N, C*H*W)
     return x_q.reshape(x_q.shape[0], -1)
+
+
+def flatten_int_backward(
+    grad_output: np.ndarray,
+    input_shape: tuple[int, ...],
+) -> np.ndarray:
+    """
+    扁平化反向传播。
+    """
+    return grad_output.reshape(input_shape)
+
+
+def relu_int_backward(
+    grad_output: np.ndarray,
+    x_q: np.ndarray,
+    zero_y: np.ndarray,
+) -> np.ndarray:
+    """
+    ReLU 反向传播。
+    """
+    mask = (x_q >= zero_y) & (x_q <= INT8_QMAX)
+    return (grad_output * mask.astype(np.float32)).astype(np.float32)
