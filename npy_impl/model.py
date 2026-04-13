@@ -18,6 +18,8 @@ from .ops import (
     linear_int_backward,
     flatten_int,
     flatten_int_backward,
+    round_clip_int8,
+    round_clip_int32,
 )
 
 
@@ -47,6 +49,15 @@ class QuantizedMNISTNet:
         self.input_scale = params['conv1']['x_scale']
         self.input_zero_point = params['conv1']['zero_x']
         self.cache: dict[str, np.ndarray | tuple[int, ...]] = {}
+
+    def _quantized_weight(self, layer_name: str) -> np.ndarray:
+        return round_clip_int8(self.params[layer_name]["weight"])
+
+    def _quantized_bias(self, layer_name: str) -> np.ndarray | None:
+        bias = self.params[layer_name]["bias"]
+        if bias is None:
+            return None
+        return round_clip_int32(bias)
 
     def quantize_input(self, x_fp: np.ndarray) -> np.ndarray:
         """输入量化: 使用PTQ确定的量化参数"""
@@ -81,15 +92,19 @@ class QuantizedMNISTNet:
 
         # 2. conv1 + relu + pool
         conv1_params = self.params['conv1']
+        conv1_weight_q = self._quantized_weight("conv1")
+        conv1_bias_q = self._quantized_bias("conv1")
         x = conv2d_3x3_int(
             x,
-            conv1_params['weight'],
-            conv1_params['bias'],
+            conv1_weight_q,
+            conv1_bias_q,
             conv1_params['zero_x'],
             conv1_params['zero_y'],
             conv1_params['effective_scale']
         )
         self.cache["conv1_out"] = x.copy()
+        self.cache["conv1_weight_q"] = conv1_weight_q
+        self.cache["conv1_bias_q"] = conv1_bias_q
 
         x = relu_int(x, conv1_params['zero_y'])
         self.cache["relu1_out"] = x.copy()
@@ -98,15 +113,19 @@ class QuantizedMNISTNet:
 
         # 3. conv2 + relu + pool
         conv2_params = self.params['conv2']
+        conv2_weight_q = self._quantized_weight("conv2")
+        conv2_bias_q = self._quantized_bias("conv2")
         x = conv2d_3x3_int(
             x,
-            conv2_params['weight'],
-            conv2_params['bias'],
+            conv2_weight_q,
+            conv2_bias_q,
             conv2_params['zero_x'],
             conv2_params['zero_y'],
             conv2_params['effective_scale']
         )
         self.cache["conv2_out"] = x.copy()
+        self.cache["conv2_weight_q"] = conv2_weight_q
+        self.cache["conv2_bias_q"] = conv2_bias_q
 
         x = relu_int(x, conv2_params['zero_y'])
         self.cache["relu2_out"] = x.copy()
@@ -120,30 +139,38 @@ class QuantizedMNISTNet:
 
         # 5. fc1 + relu
         fc1_params = self.params['fc1']
+        fc1_weight_q = self._quantized_weight("fc1")
+        fc1_bias_q = self._quantized_bias("fc1")
         x = linear_int(
             x,
-            fc1_params['weight'],
-            fc1_params['bias'],
+            fc1_weight_q,
+            fc1_bias_q,
             fc1_params['zero_x'],
             fc1_params['zero_y'],
             fc1_params['effective_scale']
         )
         self.cache["fc1_out"] = x.copy()
+        self.cache["fc1_weight_q"] = fc1_weight_q
+        self.cache["fc1_bias_q"] = fc1_bias_q
 
         x = relu_int(x, fc1_params['zero_y'])
         self.cache["fc1_relu_out"] = x.copy()
 
         # 6. fc2
         fc2_params = self.params['fc2']
+        fc2_weight_q = self._quantized_weight("fc2")
+        fc2_bias_q = self._quantized_bias("fc2")
         x = linear_int(
             x,
-            fc2_params['weight'],
-            fc2_params['bias'],
+            fc2_weight_q,
+            fc2_bias_q,
             fc2_params['zero_x'],
             fc2_params['zero_y'],
             fc2_params['effective_scale']
         )
         self.cache["fc2_out_q"] = x.copy()
+        self.cache["fc2_weight_q"] = fc2_weight_q
+        self.cache["fc2_bias_q"] = fc2_bias_q
 
         # 7. 输出反量化
         logits = self.dequantize_output(x)
@@ -159,8 +186,8 @@ class QuantizedMNISTNet:
         grad_fc1_relu_out, grad_fc2_weight, grad_fc2_bias = linear_int_backward(
             grad_fc2_out_q,
             self.cache["fc1_relu_out"],
-            self.params["fc2"]["weight"],
-            self.params["fc2"]["bias"],
+            self.cache["fc2_weight_q"],
+            self.cache["fc2_bias_q"],
             self.params["fc2"]["zero_x"],
             self.params["fc2"]["effective_scale"],
         )
@@ -174,8 +201,8 @@ class QuantizedMNISTNet:
         grad_flatten_out, grad_fc1_weight, grad_fc1_bias = linear_int_backward(
             grad_fc1_out,
             self.cache["flatten_out"],
-            self.params["fc1"]["weight"],
-            self.params["fc1"]["bias"],
+            self.cache["fc1_weight_q"],
+            self.cache["fc1_bias_q"],
             self.params["fc1"]["zero_x"],
             self.params["fc1"]["effective_scale"],
         )
@@ -199,8 +226,8 @@ class QuantizedMNISTNet:
         grad_pool1_out, grad_conv2_weight, grad_conv2_bias = conv2d_3x3_int_backward(
             grad_conv2_out,
             self.cache["pool1_out"],
-            self.params["conv2"]["weight"],
-            self.params["conv2"]["bias"],
+            self.cache["conv2_weight_q"],
+            self.cache["conv2_bias_q"],
             self.params["conv2"]["zero_x"],
             self.params["conv2"]["effective_scale"],
         )
@@ -219,8 +246,8 @@ class QuantizedMNISTNet:
         grad_input_q, grad_conv1_weight, grad_conv1_bias = conv2d_3x3_int_backward(
             grad_conv1_out,
             self.cache["input_q"],
-            self.params["conv1"]["weight"],
-            self.params["conv1"]["bias"],
+            self.cache["conv1_weight_q"],
+            self.cache["conv1_bias_q"],
             self.params["conv1"]["zero_x"],
             self.params["conv1"]["effective_scale"],
         )

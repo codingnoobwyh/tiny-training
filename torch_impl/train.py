@@ -101,12 +101,13 @@ def save_step_txt_dump(
     gradients: dict[str, torch.Tensor | None],
     weights_after: dict[str, torch.Tensor],
 ) -> Path:
-    # 每个 step 单独落一个可直接阅读的文本文件。
-    dump_dir = run_dir / "step_txt_dumps" / f"epoch_{epoch_index:04d}"
+    # 每个 epoch 一个可直接阅读的文本文件，step 内容按顺序追加。
+    dump_dir = run_dir / "step_txt_dumps"
     dump_dir.mkdir(parents=True, exist_ok=True)
-    dump_path = dump_dir / f"step_{step_in_epoch:05d}_global_{global_step:06d}.txt"
+    dump_path = dump_dir / f"epoch_{epoch_index:04d}.txt"
 
     lines = [
+        "=" * 80,
         _format_kv("epoch", str(epoch_index)),
         _format_kv("step_in_epoch", str(step_in_epoch)),
         _format_kv("global_step", str(global_step)),
@@ -127,7 +128,12 @@ def save_step_txt_dump(
             "",
         ])
 
-    dump_path.write_text("\n".join(lines))
+    content = "\n".join(lines) + "\n"
+    if step_in_epoch == 0:
+        dump_path.write_text(content)
+    else:
+        with dump_path.open("a") as handle:
+            handle.write("\n" + content)
     return dump_path
 
 
