@@ -1,21 +1,18 @@
 """
-NumPy 版最小参数更新。
+NumPy 版最小参数更新.
 """
 
 import numpy as np
 
-from .ops import INT8_QMAX, INT8_QMIN, INT32_QMAX, INT32_QMIN
-
-
-TRAINABLE_LAYERS = ("conv1", "conv2", "fc1", "fc2")
+from common.constants import INT8_QMAX, INT8_QMIN, INT32_QMAX, INT32_QMIN, TRAINABLE_LAYERS
 
 
 def make_trainable_params(params: dict[str, dict[str, np.ndarray]]) -> dict[str, dict[str, np.ndarray]]:
     """
-    将 PTQ 提取出的参数转换成可训练参数。
+    将 PTQ 提取出的参数转换成可训练参数.
 
     约定：
-    - weight / bias 使用 float32 存储，便于梯度更新
+    - weight / bias 使用 float32 存储, 便于梯度更新
     - 其它量化元信息保持原始 dtype
     """
     trainable_params: dict[str, dict[str, np.ndarray]] = {}
@@ -38,7 +35,7 @@ def sgd_step(
     momentum_buffers: dict[str, dict[str, np.ndarray]] | None = None,
 ) -> None:
     """
-    最小 SGD 更新。
+    最小 SGD 更新.
     """
     lr = float(lr)
     momentum = float(momentum)
@@ -74,7 +71,7 @@ def qas_pre_step(
     grads: dict[str, dict[str, np.ndarray] | np.ndarray],
 ) -> dict[str, dict[str, np.ndarray] | np.ndarray]:
     """
-    QAS 梯度重标定。
+    QAS 梯度重标定.
 
     沿用 torch_impl 的同一公式：
     - effective_scale = x_scale * w_scale / y_scale
@@ -114,11 +111,11 @@ def qas_pre_step(
 
 def project_quantized_parameters(params: dict[str, dict[str, np.ndarray]]) -> None:
     """
-    将训练后的参数投影回合法量化域。
+    将训练后的参数投影回合法量化域.
 
     约定：
-    - weight: round + clamp 到 int8 范围，但仍以 float32 存储
-    - bias: round + clamp 到 int32 范围，但仍以 float32 存储
+    - weight: round + clamp 到 int8 范围, 但仍以 float32 存储
+    - bias: round + clamp 到 int32 范围, 但仍以 float32 存储
     """
     for layer_name in TRAINABLE_LAYERS:
         weight = params[layer_name]["weight"]

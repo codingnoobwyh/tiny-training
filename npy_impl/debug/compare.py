@@ -18,7 +18,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from mnist_data import load_mnist_float
+from common.constants import TRAINABLE_LAYERS
+from common.dataset import DEFAULT_DATA_ROOT, build_data_loaders, load_mnist_float
+from common.train_utils import _format_kv, _format_scalar, _tensor_preview
 from npy_impl import (
     QuantizedMNISTNet as NumpyQuantizedMNISTNet,
     cross_entropy_loss,
@@ -33,41 +35,10 @@ from torch_impl.quantized.models import (
     QuantizedMNISTNet as TorchQuantizedMNISTNet,
     initialize_quantized_model_from_ptq_checkpoint,
 )
-from torch_impl.datasets import build_data_loaders
-
 
 PTQ_CHECKPOINT_PATH = REPO_ROOT / "torch_impl" / "artifacts" / "runs" / "ptq" / "checkpoint.pt"
 OUTPUT_DIR = REPO_ROOT / "npy_impl" / "artifacts"
 TRAINABLE_NAMES = ("conv1.weight", "conv1.bias", "conv2.weight", "conv2.bias", "fc1.weight", "fc1.bias", "fc2.weight", "fc2.bias")
-TRAINABLE_LAYERS = ("conv1", "conv2", "fc1", "fc2")
-
-
-def _tensor_preview(array, limit: int = 10, *, scientific: bool = False) -> str:
-    arr = np.asarray(array).reshape(-1)
-    values = arr[:limit].tolist()
-
-    def _format_value(value) -> str:
-        width = 12
-        if isinstance(value, (bool, np.bool_)):
-            return f"{int(value):>{width}d}"
-        if isinstance(value, (int, np.integer)):
-            return f"{int(value):>{width}d}"
-        value = float(value)
-        if scientific:
-            return f"{value:>{width}.4e}"
-        if abs(value - round(value)) < 1e-6:
-            return f"{int(round(value)):>{width}d}"
-        return f"{value:>{width}.4f}"
-
-    return "[" + ", ".join(_format_value(v) for v in values) + "]"
-
-
-def _format_kv(key: str, value: str) -> str:
-    return f"{key:<24}: {value}"
-
-
-def _format_float(value: float) -> str:
-    return f"{float(value):.6e}"
 
 
 def _save_report(filename: str, lines: list[str]) -> Path:
@@ -88,7 +59,7 @@ def _append_or_write_report(path: Path, lines: list[str], *, append: bool) -> No
 
 
 def _load_batch(sample_index: int, batch_size: int, train: bool) -> tuple[np.ndarray, np.ndarray]:
-    images, labels = load_mnist_float(str(REPO_ROOT / "data"), train=train)
+    images, labels = load_mnist_float(str(DEFAULT_DATA_ROOT), train=train)
     return (
         images[sample_index : sample_index + batch_size],
         labels[sample_index : sample_index + batch_size],
@@ -299,11 +270,11 @@ def run_step_compare(
         _format_kv("sample_index", str(sample_index)),
         _format_kv("batch_size", str(batch_size)),
         _format_kv("lr", f"{lr:.6f}"),
-        _format_kv("torch_loss_before", _format_float(torch_result["loss_before"])),
-        _format_kv("numpy_loss_before", _format_float(numpy_result["loss_before"])),
+        _format_kv("torch_loss_before", _format_scalar(torch_result["loss_before"], scientific=True)),
+        _format_kv("numpy_loss_before", _format_scalar(numpy_result["loss_before"], scientific=True)),
         _format_kv("loss_before_diff", f"{abs(torch_result['loss_before'] - numpy_result['loss_before']):.6e}"),
-        _format_kv("torch_loss_after", _format_float(torch_result["loss_after"])),
-        _format_kv("numpy_loss_after", _format_float(numpy_result["loss_after"])),
+        _format_kv("torch_loss_after", _format_scalar(torch_result["loss_after"], scientific=True)),
+        _format_kv("numpy_loss_after", _format_scalar(numpy_result["loss_after"], scientific=True)),
         _format_kv("loss_after_diff", f"{abs(torch_result['loss_after'] - numpy_result['loss_after']):.6e}"),
         _format_kv(
             "logits_before_diff",
@@ -483,8 +454,8 @@ def run_train_compare(
                 _format_kv("batch_size", str(batch_size)),
                 _format_kv("lr", f"{lr:.6f}"),
                 _format_kv("momentum", f"{momentum:.6f}"),
-                _format_kv("torch_loss_before", _format_float(float(torch_loss_before.detach().cpu().item()))),
-                _format_kv("numpy_loss_before", _format_float(numpy_loss_before)),
+                _format_kv("torch_loss_before", _format_scalar(float(torch_loss_before.detach().cpu().item()), scientific=True)),
+                _format_kv("numpy_loss_before", _format_scalar(numpy_loss_before, scientific=True)),
                 _format_kv("loss_before_diff", f"{abs(float(torch_loss_before.detach().cpu().item()) - numpy_loss_before):.6e}"),
                 _format_kv("logits_before_diff", f"{float(np.max(np.abs(torch_logits_before.detach().cpu().numpy() - numpy_logits_before))):.6e}"),
                 _format_kv("logits_after_diff", f"{float(np.max(np.abs(torch_logits_after - numpy_logits_after))):.6e}"),

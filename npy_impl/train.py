@@ -1,7 +1,7 @@
 """
-NumPy 版量化训练入口。
+NumPy 版量化训练入口.
 
-入口参数和训练产物尽量对齐 torch_impl/train.py 的 quantized/qas 通路。
+入口参数和训练产物尽量对齐 torch_impl/train.py 的 quantized/qas 通路.
 """
 
 from __future__ import annotations
@@ -18,6 +18,9 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 import torch
 
+from common.constants import TRAINABLE_LAYERS
+from common.train_utils import build_train_result, get_run_dir, load_checkpoint, save_json, save_step_txt_dump
+from common.dataset import DEFAULT_DATA_ROOT, build_data_loaders
 from npy_impl import (
     QuantizedMNISTNet,
     cross_entropy_loss,
@@ -27,27 +30,10 @@ from npy_impl import (
     qas_pre_step,
     sgd_step,
 )
-from torch_impl.datasets import build_data_loaders
-
 
 NPY_IMPL_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_ROOT = REPO_ROOT / "data"
 DEFAULT_OUTPUT_ROOT = NPY_IMPL_DIR / "artifacts" / "runs"
-TRAINABLE_LAYERS = ("conv1", "conv2", "fc1", "fc2")
 
-
-def get_run_dir(output_root: str, run_name: str) -> Path:
-    run_dir = Path(output_root) / run_name
-    run_dir.mkdir(parents=True, exist_ok=True)
-    return run_dir
-
-
-def save_json(path: Path, payload: dict) -> None:
-    path.write_text(json.dumps(payload, indent=2))
-
-
-def load_checkpoint(path: str | Path) -> dict:
-    return torch.load(path, map_location="cpu", weights_only=False)
 
 
 def save_numpy_checkpoint(path: Path, mode: str, params: dict[str, dict[str, np.ndarray]], train_config: dict) -> None:
@@ -69,31 +55,6 @@ def _to_numpy_batch(images: torch.Tensor, labels: torch.Tensor) -> tuple[np.ndar
     )
 
 
-def _tensor_preview(array: np.ndarray | None, limit: int = 10, *, scientific: bool = False) -> str:
-    if array is None:
-        return "None"
-    values = np.asarray(array).reshape(-1)[:limit].tolist()
-
-    def _format_value(value) -> str:
-        width = 12
-        if isinstance(value, (bool, np.bool_)):
-            return f"{int(value):>{width}d}"
-        if isinstance(value, (int, np.integer)):
-            return f"{int(value):>{width}d}"
-        value = float(value)
-        if scientific:
-            return f"{value:>{width}.4e}"
-        if abs(value - round(value)) < 1e-6:
-            return f"{int(round(value)):>{width}d}"
-        return f"{value:>{width}.4f}"
-
-    return "[" + ", ".join(_format_value(v) for v in values) + "]"
-
-
-def _format_kv(key: str, value: str) -> str:
-    return f"{key:<20}: {value}"
-
-
 def _parameter_snapshot(params: dict[str, dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
     snapshot = {}
     for layer_name in TRAINABLE_LAYERS:
@@ -109,54 +70,6 @@ def _gradient_snapshot(grads: dict[str, dict[str, np.ndarray] | np.ndarray]) -> 
         snapshot[f"{layer_name}.weight"] = grads[layer_name]["weight"].copy()
         snapshot[f"{layer_name}.bias"] = None if grads[layer_name]["bias"] is None else grads[layer_name]["bias"].copy()
     return snapshot
-
-
-def save_step_txt_dump(
-    run_dir: Path,
-    epoch_index: int,
-    step_in_epoch: int,
-    global_step: int,
-    images: np.ndarray,
-    labels: np.ndarray,
-    logits: np.ndarray,
-    loss: float,
-    weights_before: dict[str, np.ndarray],
-    gradients: dict[str, np.ndarray | None],
-    weights_after: dict[str, np.ndarray],
-) -> Path:
-    dump_dir = run_dir / "step_txt_dumps"
-    dump_dir.mkdir(parents=True, exist_ok=True)
-    dump_path = dump_dir / f"epoch_{epoch_index:04d}.txt"
-
-    lines = [
-        "=" * 80,
-        _format_kv("epoch", str(epoch_index)),
-        _format_kv("step_in_epoch", str(step_in_epoch)),
-        _format_kv("global_step", str(global_step)),
-        _format_kv("loss", f"{loss:.6f}"),
-        _format_kv("labels", _tensor_preview(labels, 10)),
-        _format_kv("logits", _tensor_preview(logits, 10)),
-        _format_kv("predictions", _tensor_preview(np.argmax(logits, axis=1), 10)),
-        _format_kv("images", _tensor_preview(images, 10)),
-        "",
-    ]
-
-    for name in weights_before.keys():
-        lines.extend([
-            f"[{name}]",
-            _format_kv("weight_before", _tensor_preview(weights_before[name], 10)),
-            _format_kv("grad", _tensor_preview(gradients.get(name), 10, scientific=True)),
-            _format_kv("weight_after", _tensor_preview(weights_after[name], 10)),
-            "",
-        ])
-
-    content = "\n".join(lines) + "\n"
-    if step_in_epoch == 0:
-        dump_path.write_text(content)
-    else:
-        with dump_path.open("a") as handle:
-            handle.write("\n" + content)
-    return dump_path
 
 
 def train_one_epoch(
@@ -278,35 +191,6 @@ def build_model(args: argparse.Namespace) -> tuple[QuantizedMNISTNet, float, str
     model = QuantizedMNISTNet(trainable_params)
     lr = args.quantized_lr if args.mode == "quantized" else args.qas_lr
     return model, lr, init_from_mode
-
-
-def build_train_result(
-    args: argparse.Namespace,
-    epoch_history: list[dict],
-    step_history: list[dict],
-    lr: float,
-    init_from_mode: str | None,
-) -> dict:
-    return {
-        "mode": args.mode,
-        "run_name": args.run_name,
-        "init_from": args.init_from,
-        "init_from_mode": init_from_mode,
-        "dump_step_txt": args.dump_step_txt,
-        "seed": args.seed,
-        "epochs": args.epochs,
-        "batch_size": args.batch_size,
-        "test_batch_size": args.test_batch_size,
-        "num_workers": args.num_workers,
-        "momentum": args.momentum,
-        "float_lr": args.float_lr,
-        "qat_lr": args.qat_lr,
-        "quantized_lr": args.quantized_lr,
-        "qas_lr": args.qas_lr,
-        "effective_lr": lr,
-        "epoch_history": epoch_history,
-        "step_history": step_history,
-    }
 
 
 def main() -> None:

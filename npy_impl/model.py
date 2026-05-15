@@ -2,7 +2,7 @@
 MNIST量化前向推理 - 使用简化算子
 
 这个实现完全按照torch_impl/QuantizedMNISTNet的结构,
-但使用简化后的算子, 便于调试和理解。
+但使用简化后的算子, 便于调试和理解.
 """
 
 import numpy as np
@@ -70,7 +70,7 @@ class QuantizedMNISTNet:
         return x_fp
 
     def dequantize_output_backward(self, grad_logits: np.ndarray) -> np.ndarray:
-        """输出反量化的反向传播。"""
+        """输出反量化的反向传播. """
         return grad_logits.astype(np.float32) * self.params['fc2']['y_scale'].astype(np.float32)
 
     def forward(self, x_fp: np.ndarray) -> np.ndarray:
@@ -179,7 +179,7 @@ class QuantizedMNISTNet:
 
     def backward(self, grad_logits: np.ndarray) -> dict[str, np.ndarray | dict[str, np.ndarray | None]]:
         """
-        整网反向传播。
+        整网反向传播.
         """
         grad_fc2_out_q = self.dequantize_output_backward(grad_logits)
 
@@ -262,7 +262,7 @@ class QuantizedMNISTNet:
 
     def backward_from_labels(self, labels: np.ndarray) -> dict[str, np.ndarray | dict[str, np.ndarray | None]]:
         """
-        从当前 forward 的 logits 和标签直接回传。
+        从当前 forward 的 logits 和标签直接回传.
         """
         grad_logits = cross_entropy_backward(self.cache["logits"], labels)
         return self.backward(grad_logits)

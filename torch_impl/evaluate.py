@@ -7,8 +7,9 @@ from torch import nn
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from torch_impl.datasets import build_data_loaders
-from torch_impl.baseline.models import FloatMNISTNet, build_native_ptq_converted_model, build_native_qat_model
+from common.dataset import DEFAULT_DATA_ROOT, build_data_loaders
+from common.train_utils import evaluate_model, get_run_dir, load_checkpoint, save_json
+from common.baseline import FloatMNISTNet, build_ptq_model, build_qat_model
 from torch_impl.quantized.models import (
     QuantizedMNISTNet,
     initialize_quantized_model_from_ptq_checkpoint,
@@ -17,37 +18,7 @@ from torch_impl.quantized.models import (
 
 TORCH_IMPL_DIR = Path(__file__).resolve().parent
 ROOT_DIR = TORCH_IMPL_DIR.parent
-DEFAULT_DATA_ROOT = ROOT_DIR / "data"
 DEFAULT_OUTPUT_ROOT = TORCH_IMPL_DIR / "artifacts" / "runs"
-
-
-def get_run_dir(output_root: str, run_name: str) -> Path:
-    run_dir = Path(output_root) / run_name
-    run_dir.mkdir(parents=True, exist_ok=True)
-    return run_dir
-
-
-def load_checkpoint(path: str | Path) -> dict:
-    return __import__("torch").load(path, map_location="cpu", weights_only=False)
-
-
-def save_json(path: Path, payload: dict) -> None:
-    path.write_text(__import__("json").dumps(payload, indent=2))
-
-
-def evaluate_model(model: nn.Module, data_loader, criterion: nn.Module) -> dict[str, float]:
-    model.eval()
-    total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
-    with __import__("torch").no_grad():
-        for images, labels in data_loader:
-            logits = model(images)
-            loss = criterion(logits, labels)
-            total_loss += loss.item() * images.size(0)
-            total_correct += (logits.argmax(dim=1) == labels).sum().item()
-            total_samples += images.size(0)
-    return {"loss": total_loss / total_samples, "top1": 100.0 * total_correct / total_samples}
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,13 +37,13 @@ def load_float_run(checkpoint: dict) -> tuple[nn.Module, dict, str]:
 
 
 def load_qat_run(checkpoint: dict) -> tuple[nn.Module, dict, str]:
-    model = build_native_qat_model()
+    model = build_qat_model()
     model.load_state_dict(checkpoint["model_state_dict"])
     return model, checkpoint["train_config"], "qat"
 
 
 def load_ptq_run(checkpoint: dict) -> tuple[nn.Module, dict, str]:
-    model = build_native_ptq_converted_model()
+    model = build_ptq_model()
     model.load_state_dict(checkpoint["model_state_dict"])
     return model, checkpoint["ptq_config"], "ptq"
 

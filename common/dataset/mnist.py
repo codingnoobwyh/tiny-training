@@ -3,7 +3,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 TRAIN_IMAGES = "train-images-idx3-ubyte"
 TRAIN_LABELS = "train-labels-idx1-ubyte"
 TEST_IMAGES = "t10k-images-idx3-ubyte"
@@ -43,9 +42,6 @@ def ensure_mnist_downloaded(data_root: str | Path) -> None:
     if all(path.exists() for path in expected):
         return
 
-    # 这里用 torchvision 只负责下载原始 IDX 文件。
-    # 真正的数据读取走本文件里的 NumPy 逻辑，保证 torch_impl 和 numpy_impl
-    # 后续都能共享同一套原始数据入口。
     from torchvision import datasets
 
     datasets.MNIST(root=str(data_root), train=True, download=True)

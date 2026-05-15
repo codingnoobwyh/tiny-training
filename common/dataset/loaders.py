@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from mnist_data import load_mnist_float
+from common.dataset.mnist import load_mnist_float
 
 
 def build_data_loaders(
@@ -10,9 +10,6 @@ def build_data_loaders(
     test_batch_size: int,
     num_workers: int,
 ) -> tuple[DataLoader, DataLoader]:
-    # 数据层改成共享的 NumPy 读取逻辑。
-    # 这样 torch_impl 和后续 numpy_impl 会消费同一份原始 IDX 数据，
-    # 避免两边的数据预处理路径悄悄分叉。
     train_images, train_labels = load_mnist_float(data_root, train=True)
     test_images, test_labels = load_mnist_float(data_root, train=False)
 

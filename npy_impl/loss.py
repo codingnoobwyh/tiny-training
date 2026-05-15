@@ -1,5 +1,5 @@
 """
-NumPy 版分类损失与基础指标。
+NumPy 版分类损失与基础指标.
 """
 
 import numpy as np
@@ -41,7 +41,7 @@ def cross_entropy_loss(logits: np.ndarray, labels: np.ndarray) -> float:
 
 def cross_entropy_backward(logits: np.ndarray, labels: np.ndarray) -> np.ndarray:
     """
-    计算交叉熵损失对 logits 的梯度。
+    计算交叉熵损失对 logits 的梯度.
 
     Args:
         logits: shape (N, C)
@@ -59,7 +59,7 @@ def cross_entropy_backward(logits: np.ndarray, labels: np.ndarray) -> np.ndarray
 
 def top1_accuracy(logits: np.ndarray, labels: np.ndarray) -> float:
     """
-    计算 top1 准确率，返回百分比。
+    计算 top1 准确率, 返回百分比.
     """
     predictions = np.argmax(logits, axis=1)
     return float(np.mean(predictions == labels) * 100.0)

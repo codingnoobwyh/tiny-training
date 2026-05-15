@@ -1,5 +1,5 @@
 """
-从现有的 PTQ checkpoint 中，把 numpy_impl 前向真正要用的量化参数提取出来。
+从现有的 PTQ checkpoint 中, 把 numpy_impl 前向真正要用的量化参数提取出来.
 """
 
 from pathlib import Path
@@ -35,7 +35,7 @@ def extract_quantization_params(state_dict) -> dict[str, dict[str, np.ndarray]]:
     conv1_w_int = conv1_w_q.int_repr().cpu().numpy().astype(np.int8)
     conv1_bias_fp = state_dict["conv1.bias"].detach().cpu().numpy().astype(np.float32)
 
-    # bias 在 PTQ checkpoint 里是 float32，转换为整数累加域
+    # bias 在 PTQ checkpoint 里是 float32, 转换为整数累加域
     # bias_int = round(bias_fp / (x_scale * w_scale))
     conv1_bias_int = np.round(conv1_bias_fp / (state_dict["quant.scale"].detach().cpu().numpy().astype(np.float32) * conv1_w_scale)).astype(np.int32)
 
@@ -54,7 +54,7 @@ def extract_quantization_params(state_dict) -> dict[str, dict[str, np.ndarray]]:
     # -----------------------------
     # conv2
     # -----------------------------
-    # conv2 的输入来自 conv1 的输出，因此：
+    # conv2 的输入来自 conv1 的输出, 因此：
     # - conv2.x_scale 来自 conv1.scale
     # - conv2.zero_x 来自 conv1.zero_point
     conv2_w_q = state_dict["conv2.weight"]
@@ -80,8 +80,8 @@ def extract_quantization_params(state_dict) -> dict[str, dict[str, np.ndarray]]:
     # -----------------------------
     # fc1
     # -----------------------------
-    # Linear 层在 PTQ checkpoint 里不是直接平铺出来的，
-    # 而是打包在 _packed_params._packed_params 中。
+    # Linear 层在 PTQ checkpoint 里不是直接平铺出来的,
+    # 而是打包在 _packed_params._packed_params 中.
     fc1_w_q, fc1_bias_fp = state_dict["fc1._packed_params._packed_params"]
     fc1_w_scale = fc1_w_q.q_per_channel_scales().detach().cpu().numpy().astype(np.float32)
     fc1_w_int = fc1_w_q.int_repr().cpu().numpy().astype(np.int8)
@@ -139,7 +139,7 @@ def load_quantized_model_params(checkpoint_path: str | Path = PTQ_CHECKPOINT_PAT
         量化参数字典
     """
     # 这是 numpy_impl 读取量化起点的唯一入口
-    # 后续前向实现应当直接消费这个函数的输出，而不是自己再解析 PyTorch checkpoint
+    # 后续前向实现应当直接消费这个函数的输出, 而不是自己再解析 PyTorch checkpoint
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"PTQ checkpoint not found at: {checkpoint_path}")
@@ -149,5 +149,5 @@ def load_quantized_model_params(checkpoint_path: str | Path = PTQ_CHECKPOINT_PAT
     if checkpoint.get("mode") != "ptq":
         raise ValueError(f"Expected mode='ptq', got mode='{checkpoint.get('mode')}'")
 
-    # 真正给 numpy_impl 使用的是提取后的分层参数结构，而不是原始 state_dict
+    # 真正给 numpy_impl 使用的是提取后的分层参数结构, 而不是原始 state_dict
     return extract_quantization_params(checkpoint["model_state_dict"])

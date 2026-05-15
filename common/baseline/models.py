@@ -1,11 +1,11 @@
 import torch
-import torch.nn as nn
 import torch.ao.quantization as tq
+from torch import nn
+
+from common.train_utils import load_checkpoint
 
 
 class FloatMNISTNet(nn.Module):
-    # 浮点基线模型。
-    # 这里只放最直接的模型定义，不混入 QAT/PTQ/QAS 训练入口逻辑。
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1)
@@ -23,11 +23,9 @@ class FloatMNISTNet(nn.Module):
         x = self.conv1(x)
         x = self.relu1(x)
         x = self.pool1(x)
-
         x = self.conv2(x)
         x = self.relu2(x)
         x = self.pool2(x)
-
         x = self.flatten(x)
         x = self.fc1(x)
         x = self.relu3(x)
@@ -36,8 +34,6 @@ class FloatMNISTNet(nn.Module):
 
 
 class QuantizableMNISTNet(nn.Module):
-    # PyTorch 原生 QAT/PTQ baseline 的母体网络。
-    # 这个模型只服务 baseline，不代表 QAS 方法本体。
     def __init__(self):
         super().__init__()
         self.quant = tq.QuantStub()
@@ -58,11 +54,9 @@ class QuantizableMNISTNet(nn.Module):
         x = self.conv1(x)
         x = self.relu1(x)
         x = self.pool1(x)
-
         x = self.conv2(x)
         x = self.relu2(x)
         x = self.pool2(x)
-
         x = self.flatten(x)
         x = self.fc1(x)
         x = self.relu3(x)
@@ -76,32 +70,36 @@ class QuantizableMNISTNet(nn.Module):
             [["conv1", "relu1"], ["conv2", "relu2"], ["fc1", "relu3"]],
             inplace=True,
         )
-def build_native_qat_model() -> nn.Module:
+
+
+def build_qat_model() -> nn.Module:
     model = QuantizableMNISTNet()
     model.fuse_model()
     model.qconfig = tq.get_default_qat_qconfig("fbgemm")
     return tq.prepare_qat(model.train(), inplace=False)
 
 
-def build_native_ptq_prepare_model() -> nn.Module:
+def build_ptq_model() -> nn.Module:
     model = QuantizableMNISTNet()
     model.fuse_model()
     model.qconfig = tq.get_default_qconfig("fbgemm")
-    return tq.prepare(model.eval(), inplace=False)
+    prepared = tq.prepare(model.eval(), inplace=False)
+    return tq.convert(prepared, inplace=False)
 
 
-def build_native_ptq_prepare_model_from_float_state_dict(float_state_dict: dict[str, torch.Tensor]) -> nn.Module:
-    model = QuantizableMNISTNet()
-    model.load_state_dict(float_state_dict, strict=True)
-    model.fuse_model()
-    model.qconfig = tq.get_default_qconfig("fbgemm")
-    return tq.prepare(model.eval(), inplace=False)
-
-
-def build_native_ptq_converted_model() -> nn.Module:
-    import warnings
-
-    prepared = build_native_ptq_prepare_model()
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=".*must run observer before calling calculate_qparams.*")
-        return tq.convert(prepared, inplace=False)
+def initialize_qat_from_float(model: nn.Module, init_from: str) -> None:
+    checkpoint = load_checkpoint(init_from)
+    if checkpoint["mode"] != "float":
+        raise ValueError(f"qat runner expects float checkpoint, got {checkpoint['mode']}")
+    source_state_dict = checkpoint["model_state_dict"]
+    target_state_dict = model.state_dict()
+    shared_state_dict = {
+        key: value
+        for key, value in source_state_dict.items()
+        if key in target_state_dict and target_state_dict[key].shape == value.shape
+    }
+    missing, unexpected = model.load_state_dict(shared_state_dict, strict=False)
+    print(
+        "Initialized QAT model from float checkpoint: "
+        f"loaded={len(shared_state_dict)} missing={len(missing)} unexpected={len(unexpected)}"
+    )

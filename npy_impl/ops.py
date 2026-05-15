@@ -5,21 +5,17 @@
 import numpy as np
 from typing import Optional
 
-
-INT8_QMIN = -128
-INT8_QMAX = 127
-INT32_QMIN = -2147483648
-INT32_QMAX = 2147483647
+from common.constants import INT8_QMIN, INT8_QMAX, INT32_QMIN, INT32_QMAX
 
 
 def round_clip_int8(x: np.ndarray | float | int) -> np.ndarray:
-    """四舍五入并裁剪到 int8 范围。"""
+    """四舍五入并裁剪到 int8 范围. """
     x_rounded = np.round(x)
     return x_rounded.clip(INT8_QMIN, INT8_QMAX).astype(np.int8)
 
 
 def round_clip_int32(x: np.ndarray | float | int) -> np.ndarray:
-    """四舍五入并裁剪到 int32 范围。"""
+    """四舍五入并裁剪到 int32 范围. """
     x_rounded = np.round(x)
     return x_rounded.clip(INT32_QMIN, INT32_QMAX).astype(np.int32)
 
@@ -53,7 +49,7 @@ def conv2d_3x3_int(
     H_out = H_in
     W_out = W_in
 
-    # 当前 demo 下 zero_x/zero_y 都是标量；effective_scale 仍按输出通道处理。
+    # 当前 demo 下 zero_x/zero_y 都是标量；effective_scale 仍按输出通道处理.
     effective_scale_b = effective_scale.reshape(1, -1, 1, 1)
 
     # 减去输入零点
@@ -103,7 +99,7 @@ def conv2d_3x3_int_backward(
     effective_scale: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """
-    3x3 same padding 卷积的反向传播。
+    3x3 same padding 卷积的反向传播.
 
     当前实现对齐 torch_impl 的 backward 语义：
     - 忽略 round 的导数
@@ -202,7 +198,7 @@ def maxpool2d_2x2_int_backward(
     x_q: np.ndarray,
 ) -> np.ndarray:
     """
-    2x2 最大池化的反向传播。
+    2x2 最大池化的反向传播.
     """
     N, C, H_in, W_in = x_q.shape
     _, _, H_out, W_out = grad_output.shape
@@ -259,7 +255,7 @@ def linear_int(
     """
     C_out = weight.shape[0]
 
-    # 当前 demo 下 zero_x/zero_y 都是标量；effective_scale 仍按输出特征处理。
+    # 当前 demo 下 zero_x/zero_y 都是标量；effective_scale 仍按输出特征处理.
     effective_scale_b = effective_scale.reshape(1, -1)
 
     # 减去输入零点
@@ -289,7 +285,7 @@ def linear_int_backward(
     effective_scale: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """
-    全连接层反向传播。
+    全连接层反向传播.
     """
     grad_linear_out = grad_output.astype(np.float32) * effective_scale.reshape(1, -1).astype(np.float32)
     x_centered = x_q.astype(np.float32) - np.float32(zero_x)
@@ -320,7 +316,7 @@ def flatten_int_backward(
     input_shape: tuple[int, ...],
 ) -> np.ndarray:
     """
-    扁平化反向传播。
+    扁平化反向传播.
     """
     return grad_output.reshape(input_shape)
 
@@ -331,7 +327,7 @@ def relu_int_backward(
     zero_y: np.ndarray,
 ) -> np.ndarray:
     """
-    ReLU 反向传播。
+    ReLU 反向传播.
     """
     mask = (x_q >= zero_y) & (x_q <= INT8_QMAX)
     return (grad_output * mask.astype(np.float32)).astype(np.float32)
