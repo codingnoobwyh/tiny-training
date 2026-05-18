@@ -17,7 +17,7 @@ def _read_idx_images(path: Path) -> np.ndarray:
     with path.open("rb") as handle:
         magic, count, rows, cols = struct.unpack(">IIII", handle.read(16))
         if magic != 2051:
-            raise ValueError(f"Unexpected MNIST image magic number in {path}: {magic}")
+            raise ValueError(f"Unexpected Mnist image magic number in {path}: {magic}")
         images = np.frombuffer(handle.read(), dtype=np.uint8)
     return images.reshape(count, rows, cols)
 
@@ -26,7 +26,7 @@ def _read_idx_labels(path: Path) -> np.ndarray:
     with path.open("rb") as handle:
         magic, count = struct.unpack(">II", handle.read(8))
         if magic != 2049:
-            raise ValueError(f"Unexpected MNIST label magic number in {path}: {magic}")
+            raise ValueError(f"Unexpected Mnist label magic number in {path}: {magic}")
         labels = np.frombuffer(handle.read(), dtype=np.uint8)
     return labels.reshape(count)
 

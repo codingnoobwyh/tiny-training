@@ -5,6 +5,19 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
+
+from common.constants import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_FLOAT_LR,
+    DEFAULT_MOMENTUM,
+    DEFAULT_NUM_WORKERS,
+    DEFAULT_QAS_LR,
+    DEFAULT_QAT_LR,
+    DEFAULT_QUANTIZED_LR,
+    DEFAULT_SEED,
+    DEFAULT_TEST_BATCH_SIZE,
+)
 
 
 def get_run_dir(output_root: str, run_name: str) -> Path:
@@ -120,17 +133,16 @@ def build_train_result(
         "run_name": args.run_name,
         "init_from": args.init_from,
         "init_from_mode": init_from_mode,
-        "dump_step_txt": args.dump_step_txt,
-        "seed": args.seed,
+        "seed": DEFAULT_SEED,
         "epochs": args.epochs,
-        "batch_size": args.batch_size,
-        "test_batch_size": args.test_batch_size,
-        "num_workers": args.num_workers,
-        "momentum": args.momentum,
-        "float_lr": args.float_lr,
-        "qat_lr": args.qat_lr,
-        "quantized_lr": args.quantized_lr,
-        "qas_lr": args.qas_lr,
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "test_batch_size": DEFAULT_TEST_BATCH_SIZE,
+        "num_workers": DEFAULT_NUM_WORKERS,
+        "momentum": DEFAULT_MOMENTUM,
+        "float_lr": DEFAULT_FLOAT_LR,
+        "qat_lr": DEFAULT_QAT_LR,
+        "quantized_lr": DEFAULT_QUANTIZED_LR,
+        "qas_lr": DEFAULT_QAS_LR,
         "effective_lr": lr,
         "epoch_history": epoch_history,
         "step_history": step_history,
@@ -138,6 +150,49 @@ def build_train_result(
 
 
 # —————————————————————————— torch helpers ——————————————————————————
+
+
+def _named_parameter_snapshot(model: nn.Module) -> dict[str, torch.Tensor]:
+    return {
+        name: param.detach().cpu().clone()
+        for name, param in model.named_parameters()
+    }
+
+
+def _named_gradient_snapshot(model: nn.Module) -> dict[str, torch.Tensor | None]:
+    return {
+        name: None if param.grad is None else param.grad.detach().cpu().clone()
+        for name, param in model.named_parameters()
+    }
+
+
+def _write_torch_step_dump(
+    run_dir: Path,
+    epoch_index: int,
+    step_in_epoch: int,
+    global_step: int,
+    images,
+    labels,
+    logits,
+    loss,
+    weights_before,
+    gradients,
+    weights_after,
+) -> str:
+    dump_path = save_step_txt_dump(
+        run_dir=run_dir,
+        epoch_index=epoch_index,
+        step_in_epoch=step_in_epoch,
+        global_step=global_step,
+        images=images,
+        labels=labels,
+        logits=logits,
+        loss=loss,
+        weights_before=weights_before,
+        gradients=gradients,
+        weights_after=weights_after,
+    )
+    return str(dump_path)
 
 
 def save_checkpoint(path: Path, payload: dict) -> None:
@@ -161,3 +216,82 @@ def evaluate_model(model, data_loader, criterion) -> dict[str, float]:
             total_correct += (logits.argmax(dim=1) == labels).sum().item()
             total_samples += images.size(0)
     return {"loss": total_loss / total_samples, "top1": 100.0 * total_correct / total_samples}
+
+
+def torch_train_one_epoch(
+    model: nn.Module,
+    data_loader,
+    criterion,
+    optimizer,
+    desc: str,
+    epoch_index: int,
+    global_step_start: int,
+    run_dir: Path,
+    pre_step=None,
+    post_step=None,
+) -> tuple[dict[str, float], list[dict], int]:
+    from tqdm import tqdm
+
+    model.train()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+    global_step = global_step_start
+    step_history = []
+
+    progress = tqdm(data_loader, desc=desc, leave=False)
+    for step_in_epoch, (images, labels) in enumerate(progress):
+        optimizer.zero_grad()
+        weights_before = _named_parameter_snapshot(model)
+
+        logits = model(images)
+        loss = criterion(logits, labels)
+        loss.backward()
+
+        if pre_step is not None:
+            pre_step(model)
+        gradients = _named_gradient_snapshot(model)
+        optimizer.step()
+        if post_step is not None:
+            post_step(model)
+
+        weights_after = _named_parameter_snapshot(model)
+        dump_path = _write_torch_step_dump(
+            run_dir=run_dir,
+            epoch_index=epoch_index,
+            step_in_epoch=step_in_epoch,
+            global_step=global_step,
+            images=images,
+            labels=labels,
+            logits=logits,
+            loss=loss,
+            weights_before=weights_before,
+            gradients=gradients,
+            weights_after=weights_after,
+        )
+
+        predictions = logits.argmax(dim=1)
+        batch_size = images.size(0)
+        batch_correct = (predictions == labels).sum().item()
+        total_loss += loss.item() * batch_size
+        total_correct += batch_correct
+        total_samples += batch_size
+
+        step_history.append({
+            "epoch": epoch_index,
+            "step_in_epoch": step_in_epoch,
+            "global_step": global_step,
+            "loss": loss.item(),
+            "top1": 100.0 * batch_correct / batch_size,
+            "step_txt_dump": dump_path,
+        })
+        global_step += 1
+        progress.set_postfix({
+            "loss": f"{total_loss / total_samples:.4f}",
+            "top1": f"{100.0 * total_correct / total_samples:.2f}",
+        })
+
+    return {
+        "loss": total_loss / total_samples,
+        "top1": 100.0 * total_correct / total_samples,
+    }, step_history, global_step

@@ -13,59 +13,13 @@ def _to_buffer_tensor(value, dtype=torch.float32) -> torch.Tensor:
     return torch.tensor(value, dtype=dtype)
 
 
-def _get_per_channel_scale(x: torch.Tensor, n_bit: int = 8, eps: float = 1e-6) -> torch.Tensor:
-    # 按第 0 维逐通道取最大绝对值, 再映射到 int8 网格
-    #
-    # 这里一定要和 "前向量化 scale" 区分开:
-    # 1. 前向真正使用的量化参数是层上的 x_scale / y_scale / effective_scale,
-    #    它们应该来自 PTQ, 或者来自后续更正式的量化初始化流程
-    # 2. 这个函数算出来的 scale 不是前向量化参数,
-    #    而是为了把 backward 产生的浮点梯度重新投影回离散量化网格而临时构造的 scale
-    #
-    # 所以这里的 scale 只服务于 "梯度重投影" , 不是卷积前向公式的一部分
-    x = x.reshape(x.shape[0], -1)
-    max_abs = x.abs().max(dim=1)[0].clamp_min(eps)
-    qmax = 2 ** (n_bit - 1) - 1
-    return max_abs / qmax
-
-
-def _project_gradient_per_channel(grad: torch.Tensor, n_bit: int = 8) -> torch.Tensor:
-    # 这里把 "当前一步 backward 得到的浮点梯度" 重新投影到量化网格上
-    # 这里用的 per-channel scale 不是 PTQ 已经确定好的前向 scale,
-    # 而是从当前 grad 本身统计出来、专门给梯度离散化使用的 scale
-    # 注意:梯度仍然是 float tensor, 只是它的取值被限制在某个离散集合里
-    scales = _get_per_channel_scale(grad, n_bit=n_bit)
-    view_shape = [grad.shape[0]] + [1] * (grad.dim() - 1)
-    return (grad / scales.view(*view_shape)).round() * scales.view(*view_shape)
-
-
-def _project_activation_gradient_per_channel(grad: torch.Tensor, n_bit: int = 8) -> torch.Tensor:
-    # 对输入梯度做重投影时, 我们希望按通道维 C 来量化
-    # 对 NCHW 张量来说, C 在 dim=1, 因此先转成 CNHW, 再复用同一个 per-channel 量化逻辑
-    # 这里同样是在量化 "梯度" , 不是在重新估计前向激活的 x_scale
-    grad_t = grad.transpose(0, 1)
-    scales = _get_per_channel_scale(grad_t, n_bit=n_bit)
-    return (grad / scales.view(1, -1, 1, 1)).round() * scales.view(1, -1, 1, 1)
-
-
-def _project_feature_gradient(grad: torch.Tensor, n_bit: int = 8) -> torch.Tensor:
-    # 对线性层输入梯度做重投影时, 希望按特征维度处理.
-    # 对 [N, C] 张量来说, 先转成 [C, N], 再按 "第 0 维是通道" 复用同一套逻辑.
-    grad_t = grad.transpose(0, 1)
-    scales = _get_per_channel_scale(grad_t, n_bit=n_bit)
-    return (grad / scales.view(1, -1)).round() * scales.view(1, -1)
-
-
 class _QuantizedReLURange(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, zero_y: torch.Tensor, a_bit: int) -> torch.Tensor:
-        # zero_y 对应 "实数 0" 在输出量化域里的码值, 量化 ReLU 在码值域里的效果就是 clamp(min=zero_y, max=qmax)
         qmax = 2 ** (a_bit - 1) - 1
         lower = zero_y
-        # bool 变量, 记录输入 x 哪些位置被截断, shape 和 x 一样.
         binary_mask = (lower <= x) & (x <= qmax)
         ctx.save_for_backward(binary_mask)
-        # 创建一个和 x 形状一样的新张量, 所有元素都等于 qmax.
         upper = torch.full_like(x, qmax)
         return torch.minimum(torch.maximum(x, lower), upper)
 
@@ -131,13 +85,13 @@ class _QASConv2dFunc(torch.autograd.Function):
         grad_bias = grad_conv_out.sum([0, 2, 3])
 
         grad_conv_in = torch.nn.grad.conv2d_input(
-            input_size  = ctx.input_size,
-            weight      = weight_int,
-            grad_output = grad_conv_out,
-            stride      = ctx.stride,
-            padding     = ctx.padding,
-            dilation    = ctx.dilation,
-            groups      = ctx.groups,
+            input_size=ctx.input_size,
+            weight=weight_int,
+            grad_output=grad_conv_out,
+            stride=ctx.stride,
+            padding=ctx.padding,
+            dilation=ctx.dilation,
+            groups=ctx.groups,
         )
         grad_x = grad_conv_in
 
@@ -150,9 +104,6 @@ class _QASConv2dFunc(torch.autograd.Function):
             dilation=ctx.dilation,
             groups=ctx.groups,
         )
-
-        grad_w = _project_gradient_per_channel(grad_w, n_bit=8)
-        grad_x = _project_activation_gradient_per_channel(grad_x, n_bit=8)
 
         return grad_x, grad_w, grad_bias, None, None, None, None, None, None, None, None, None
 
@@ -194,9 +145,6 @@ class _QASLinearFunc(torch.autograd.Function):
         grad_x = grad_linear_out @ weight_int
         grad_w = grad_linear_out.transpose(0, 1) @ x_centered
 
-        grad_w = _project_gradient_per_channel(grad_w, n_bit=8)
-        grad_x = _project_feature_gradient(grad_x, n_bit=8)
-
         return grad_x, grad_w, grad_bias, None, None, None, None, None
 
 
@@ -211,15 +159,13 @@ class QASConv2d(nn.Conv2d):
         x_scale,
         w_scale,
         y_scale,
-        w_bit: int = 8,
-        a_bit: int = 8,
     ):
         super().__init__(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=1,
-            padding=0,
+            padding=1,
             dilation=1,
             groups=1,
             bias=True,
@@ -231,9 +177,6 @@ class QASConv2d(nn.Conv2d):
         self.register_buffer("x_scale", _to_buffer_tensor(x_scale))
         self.register_buffer("w_scale", _to_buffer_tensor(w_scale))
         self.register_buffer("y_scale", _to_buffer_tensor(y_scale))
-
-        self.w_bit = w_bit
-        self.a_bit = a_bit
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _QASConv2dFunc.apply(
@@ -272,8 +215,6 @@ class QASLinear(nn.Linear):
         x_scale,
         w_scale,
         y_scale,
-        w_bit: int = 8,
-        a_bit: int = 8,
     ):
         super().__init__(in_features=in_features, out_features=out_features, bias=True)
 
@@ -282,9 +223,6 @@ class QASLinear(nn.Linear):
         self.register_buffer("x_scale", _to_buffer_tensor(x_scale))
         self.register_buffer("w_scale", _to_buffer_tensor(w_scale))
         self.register_buffer("y_scale", _to_buffer_tensor(y_scale))
-
-        self.w_bit = w_bit
-        self.a_bit = a_bit
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _QASLinearFunc.apply(
@@ -299,34 +237,32 @@ class QASLinear(nn.Linear):
         )
 
 
-
 class QASSGD(torch.optim.SGD):
     def pre_step(self, model: torch.nn.Module) -> None:
         for module in model.modules():
             if not isinstance(module, (QASConv2d, QASLinear)):
                 continue
-            x_scale = module.x_scale.detach().to(torch.float32)
+
             w_scale = module.w_scale.detach().to(torch.float32)
+            x_scale = module.x_scale.detach().to(torch.float32)
+            weight_grad = module.weight.grad
+            bias_grad = module.bias.grad
 
-            if module.weight.grad is not None:
-                view_shape = [w_scale.shape[0]] + [1] * (module.weight.grad.dim() - 1)
-                module.weight.grad.data.div_(w_scale.view(*view_shape) ** 2)
+            # Conv: [C_out, 1, 1, 1]; Linear: [C_out, 1].
+            broadcast_shape = [w_scale.shape[0]] + [1] * (weight_grad.dim() - 1)
+            weight_scale = w_scale.view(*broadcast_shape)
+            bias_scale = x_scale * w_scale
 
-            if module.bias is not None and module.bias.grad is not None:
-                module.bias.grad.data.div_((x_scale * w_scale) ** 2)
+            with torch.no_grad():
+                weight_grad.div_(weight_scale.square())
+                bias_grad.div_(bias_scale.square())
 
 
 def project_quantized_parameters(model: torch.nn.Module) -> None:
-    # 参数投影放在 optimizer.step() 之后, 而不是 backward 里.
-    # 这样职责清楚：
-    # 1. backward 只负责算梯度
-    # 2. optimizer.step() 负责更新浮点参数副本
-    # 3. 这里再把参数拉回 "合法量化码值域"
     with torch.no_grad():
         for module in model.modules():
             if not isinstance(module, (QASConv2d, QASLinear)):
                 continue
 
-            module.weight.data.copy_(module.weight.data.round().clamp(INT8_QMIN, INT8_QMAX))
-            if module.bias is not None:
-                module.bias.data.copy_(module.bias.data.round().clamp(INT32_QMIN, INT32_QMAX))
+            module.weight.data.round_().clamp_(INT8_QMIN, INT8_QMAX)
+            module.bias.data.round_().clamp_(INT32_QMIN, INT32_QMAX)

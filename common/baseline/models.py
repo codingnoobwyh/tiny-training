@@ -5,7 +5,7 @@ from torch import nn
 from common.train_utils import load_checkpoint
 
 
-class FloatMNISTNet(nn.Module):
+class FloatMnistNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1)
@@ -33,7 +33,7 @@ class FloatMNISTNet(nn.Module):
         return x
 
 
-class QuantizableMNISTNet(nn.Module):
+class QuantizedMnistNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.quant = tq.QuantStub()
@@ -73,14 +73,14 @@ class QuantizableMNISTNet(nn.Module):
 
 
 def build_qat_model() -> nn.Module:
-    model = QuantizableMNISTNet()
+    model = QuantizedMnistNet()
     model.fuse_model()
     model.qconfig = tq.get_default_qat_qconfig("fbgemm")
     return tq.prepare_qat(model.train(), inplace=False)
 
 
 def build_ptq_model() -> nn.Module:
-    model = QuantizableMNISTNet()
+    model = QuantizedMnistNet()
     model.fuse_model()
     model.qconfig = tq.get_default_qconfig("fbgemm")
     prepared = tq.prepare(model.eval(), inplace=False)

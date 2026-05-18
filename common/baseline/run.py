@@ -9,15 +9,24 @@ from torch import nn
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from common.constants import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_BASELINE_RUN_NAME,
+    DEFAULT_LR,
+    DEFAULT_MOMENTUM,
+    DEFAULT_NUM_WORKERS,
+    DEFAULT_QAT_LR,
+    DEFAULT_SEED,
+    DEFAULT_TEST_BATCH_SIZE,
+)
 from common.baseline.models import (
-    FloatMNISTNet,
-    QuantizableMNISTNet,
+    FloatMnistNet,
+    QuantizedMnistNet,
     build_qat_model,
     initialize_qat_from_float,
 )
 from common.dataset import DEFAULT_DATA_ROOT, build_data_loaders
-from common.train_utils import evaluate_model, get_run_dir, load_checkpoint, save_checkpoint, save_json
-from torch_impl.train import train_one_epoch
+from common.train_utils import evaluate_model, get_run_dir, load_checkpoint, save_checkpoint, save_json, torch_train_one_epoch
 
 BASELINE_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_ROOT = BASELINE_DIR / "artifacts"
@@ -29,13 +38,12 @@ def _make_train_result(args, mode: str, lr: float, epoch_history: list, step_his
         "run_name": args.run_name,
         "init_from": init_from,
         "init_from_mode": "float" if init_from else None,
-        "dump_step_txt": args.dump_step_txt,
-        "seed": args.seed,
+        "seed": DEFAULT_SEED,
         "epochs": args.epochs,
-        "batch_size": args.batch_size,
-        "test_batch_size": args.test_batch_size,
-        "num_workers": args.num_workers,
-        "momentum": args.momentum,
+        "batch_size": DEFAULT_BATCH_SIZE,
+        "test_batch_size": DEFAULT_TEST_BATCH_SIZE,
+        "num_workers": DEFAULT_NUM_WORKERS,
+        "momentum": DEFAULT_MOMENTUM,
         "effective_lr": lr,
         "epoch_history": epoch_history,
         "step_history": step_history,
@@ -44,19 +52,9 @@ def _make_train_result(args, mode: str, lr: float, epoch_history: list, step_his
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Baseline pipeline: float → PTQ → QAT")
-    parser.add_argument("--run-name", required=True)
-    parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
-    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
+    parser.add_argument("--run-name", default=DEFAULT_BASELINE_RUN_NAME)
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--test-batch-size", type=int, default=512)
-    parser.add_argument("--num-workers", type=int, default=2)
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--qat-lr", type=float, default=0.001)
-    parser.add_argument("--momentum", type=float, default=0.9)
-    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--calibration-batches", type=int, default=32)
-    parser.add_argument("--dump-step-txt", action="store_true")
     return parser.parse_args()
 
 
@@ -65,17 +63,15 @@ def _train_loop(model, optimizer, train_loader, criterion, args, run_dir, mode, 
     step_history = []
     global_step = 0
     for epoch in range(args.epochs):
-        train_metrics, epoch_steps, global_step = train_one_epoch(
+        train_metrics, epoch_steps, global_step = torch_train_one_epoch(
             model,
             train_loader,
             criterion,
             optimizer,
             desc=f"{mode} train {epoch + 1}/{args.epochs}",
-            quantized_mode=False,
             epoch_index=epoch,
             global_step_start=global_step,
             run_dir=run_dir,
-            dump_step_txt=args.dump_step_txt,
         )
         epoch_history.append({"epoch": epoch, "train": train_metrics})
         step_history.extend(epoch_steps)
@@ -93,23 +89,23 @@ def _train_loop(model, optimizer, train_loader, criterion, args, run_dir, mode, 
 
 def main() -> None:
     args = parse_args()
-    torch.manual_seed(args.seed)
+    torch.manual_seed(DEFAULT_SEED)
 
     train_loader, test_loader = build_data_loaders(
-        args.data_root,
-        args.batch_size,
-        args.test_batch_size,
-        args.num_workers,
+        DEFAULT_DATA_ROOT,
+        DEFAULT_BATCH_SIZE,
+        DEFAULT_TEST_BATCH_SIZE,
+        DEFAULT_NUM_WORKERS,
     )
     criterion = nn.CrossEntropyLoss()
 
     # ———— Phase 1: Float training ————
-    float_dir = get_run_dir(args.output_root, args.run_name)
-    print(f"===== Phase 1: Float training, lr={args.lr}, run_dir={float_dir} =====")
+    float_dir = get_run_dir(DEFAULT_OUTPUT_ROOT, args.run_name)
+    print(f"===== Phase 1: Float training, lr={DEFAULT_LR}, run_dir={float_dir} =====")
 
-    float_model = FloatMNISTNet()
-    float_optimizer = torch.optim.SGD(float_model.parameters(), lr=args.lr, momentum=args.momentum)
-    _train_loop(float_model, float_optimizer, train_loader, criterion, args, float_dir, "float", args.lr, None)
+    float_model = FloatMnistNet()
+    float_optimizer = torch.optim.SGD(float_model.parameters(), lr=DEFAULT_LR, momentum=DEFAULT_MOMENTUM)
+    _train_loop(float_model, float_optimizer, train_loader, criterion, args, float_dir, "float", DEFAULT_LR, None)
 
     float_metrics = evaluate_model(float_model, test_loader, criterion)
     save_json(float_dir / "eval_result.json", {
@@ -137,11 +133,11 @@ def main() -> None:
     float_ckpt_path = str(float_dir / "checkpoint.pt")
 
     # ———— Phase 2: PTQ ————
-    ptq_dir = get_run_dir(args.output_root, f"{args.run_name}_ptq")
+    ptq_dir = get_run_dir(DEFAULT_OUTPUT_ROOT, f"{args.run_name}_ptq")
     print(f"===== Phase 2: PTQ, run_dir={ptq_dir} =====")
 
     float_state_dict = load_checkpoint(float_ckpt_path)["model_state_dict"]
-    ptq_model = QuantizableMNISTNet()
+    ptq_model = QuantizedMnistNet()
     ptq_model.load_state_dict(float_state_dict, strict=True)
     ptq_model.fuse_model()
     ptq_model.qconfig = tq.get_default_qconfig("fbgemm")
@@ -169,22 +165,22 @@ def main() -> None:
         "model_state_dict": ptq_model.state_dict(),
         "source_checkpoint": float_ckpt_path,
         "ptq_config": {
-            "batch_size": args.batch_size,
-            "test_batch_size": args.test_batch_size,
-            "num_workers": args.num_workers,
+            "batch_size": DEFAULT_BATCH_SIZE,
+            "test_batch_size": DEFAULT_TEST_BATCH_SIZE,
+            "num_workers": DEFAULT_NUM_WORKERS,
             "calibration_batches": args.calibration_batches,
         },
     })
     print(f"PTQ eval: top1={ptq_metrics['top1']:.2f} loss={ptq_metrics['loss']:.4f}")
 
     # ———— Phase 3: QAT ————
-    qat_dir = get_run_dir(args.output_root, f"{args.run_name}_qat")
-    print(f"===== Phase 3: QAT training, lr={args.qat_lr}, run_dir={qat_dir} =====")
+    qat_dir = get_run_dir(DEFAULT_OUTPUT_ROOT, f"{args.run_name}_qat")
+    print(f"===== Phase 3: QAT training, lr={DEFAULT_QAT_LR}, run_dir={qat_dir} =====")
 
     qat_model = build_qat_model()
     initialize_qat_from_float(qat_model, float_ckpt_path)
-    qat_optimizer = torch.optim.SGD(qat_model.parameters(), lr=args.qat_lr, momentum=args.momentum)
-    _train_loop(qat_model, qat_optimizer, train_loader, criterion, args, qat_dir, "qat", args.qat_lr, float_ckpt_path)
+    qat_optimizer = torch.optim.SGD(qat_model.parameters(), lr=DEFAULT_QAT_LR, momentum=DEFAULT_MOMENTUM)
+    _train_loop(qat_model, qat_optimizer, train_loader, criterion, args, qat_dir, "qat", DEFAULT_QAT_LR, float_ckpt_path)
 
     qat_metrics = evaluate_model(qat_model, test_loader, criterion)
     save_json(qat_dir / "eval_result.json", {
