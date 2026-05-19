@@ -1,11 +1,11 @@
 """
-简化量化前向算子 - 仅支持MNIST网络结构
+简化量化前向算子 - 仅支持Mnist网络结构
 """
 
 import numpy as np
 from typing import Optional
 
-from common.constants import INT8_QMIN, INT8_QMAX, INT32_QMIN, INT32_QMAX
+from common.constants import INT8_QMIN, INT8_QMAX, INT32_QMIN, INT32_QMAX, TRAINABLE_LAYERS
 
 
 def round_clip_int8(x: np.ndarray | float | int) -> np.ndarray:
@@ -76,7 +76,8 @@ def conv2d_3x3_int(
                                     w_value = np.int32(weight[c_out, c_in, kh, kw])
                                     conv_sum += x_value * w_value
 
-                    # 加偏置
+                    # 加偏置（npy_impl 使用 int32 累加无需 round；torch_impl 使用 float32 累加，
+                    # 因此在加偏置前有额外 round 以消除浮点漂移。此处语义等价。）
                     if bias is not None:
                         conv_sum += bias[c_out]
 
@@ -148,8 +149,8 @@ def relu_int(
     Returns:
         输出整数码值, shape 与输入相同, dtype=int8
     """
-    # ReLU: max(x, zero_y)
-    output = np.maximum(x_q, zero_y)
+    # ReLU: clamp(x, zero_y, INT8_QMAX)
+    output = np.clip(x_q, zero_y, INT8_QMAX)
     return output.astype(np.int8)
 
 
@@ -264,7 +265,7 @@ def linear_int(
     # 线性变换
     output = np.dot(x_centered, weight.astype(np.int32).T)
 
-    # 加偏置
+    # 加偏置（int32 累加无浮点漂移，无需 torch_impl 的额外 round）
     if bias is not None:
         output = output + bias.reshape(1, -1)
 
@@ -331,3 +332,110 @@ def relu_int_backward(
     """
     mask = (x_q >= zero_y) & (x_q <= INT8_QMAX)
     return (grad_output * mask.astype(np.float32)).astype(np.float32)
+
+
+def make_trainable_params(params: dict[str, dict[str, np.ndarray]]) -> dict[str, dict[str, np.ndarray]]:
+    """
+    将 PTQ 提取出的参数转换成可训练参数.
+
+    weight / bias 用 float32 存储, 其它量化元信息保持原 dtype.
+    """
+    trainable_params: dict[str, dict[str, np.ndarray]] = {}
+    for layer_name, layer_params in params.items():
+        copied_layer: dict[str, np.ndarray] = {}
+        for key, value in layer_params.items():
+            copied_value = value.copy() if isinstance(value, np.ndarray) else np.array(value, copy=True)
+            if key in ("weight", "bias") and copied_value is not None:
+                copied_value = copied_value.astype(np.float32, copy=False)
+            copied_layer[key] = copied_value
+        trainable_params[layer_name] = copied_layer
+    return trainable_params
+
+
+def sgd_step(
+    params: dict[str, dict[str, np.ndarray]],
+    grads: dict[str, dict[str, np.ndarray] | np.ndarray],
+    lr: float,
+    momentum: float = 0.0,
+    momentum_buffers: dict[str, dict[str, np.ndarray]] | None = None,
+) -> None:
+    """
+    对齐 torch.optim.SGD 的最小更新路径.
+    """
+    lr = float(lr)
+    momentum = float(momentum)
+    for layer_name in TRAINABLE_LAYERS:
+        layer_grads = grads[layer_name]
+
+        weight_grad = layer_grads["weight"].astype(np.float32)
+        if momentum_buffers is not None and momentum != 0.0:
+            weight_buffer = momentum_buffers.setdefault(layer_name, {}).setdefault(
+                "weight",
+                np.zeros_like(params[layer_name]["weight"], dtype=np.float32),
+            )
+            weight_buffer *= momentum
+            weight_buffer += weight_grad
+            weight_grad = weight_buffer
+        params[layer_name]["weight"] -= lr * weight_grad
+
+        bias_grad = layer_grads["bias"].astype(np.float32)
+        if momentum_buffers is not None and momentum != 0.0:
+            bias_buffer = momentum_buffers.setdefault(layer_name, {}).setdefault(
+                "bias",
+                np.zeros_like(params[layer_name]["bias"], dtype=np.float32),
+            )
+            bias_buffer *= momentum
+            bias_buffer += bias_grad
+            bias_grad = bias_buffer
+        params[layer_name]["bias"] -= lr * bias_grad
+
+
+def qas_pre_step(
+    params: dict[str, dict[str, np.ndarray]],
+    grads: dict[str, dict[str, np.ndarray] | np.ndarray],
+) -> dict[str, dict[str, np.ndarray] | np.ndarray]:
+    """
+    QAS 梯度重标定, 对齐 torch_impl.operators.QASSGD.pre_step.
+    """
+    scaled_grads: dict[str, dict[str, np.ndarray] | np.ndarray] = {
+        "grad_input_q": grads["grad_input_q"],
+    }
+
+    for layer_name in TRAINABLE_LAYERS:
+        layer_params = params[layer_name]
+        layer_grads = grads[layer_name]
+
+        w_scale = np.asarray(layer_params["w_scale"], dtype=np.float32)
+        x_scale = np.asarray(layer_params["x_scale"], dtype=np.float32)
+
+        weight_grad = layer_grads["weight"].astype(np.float32, copy=True)
+        view_shape = (w_scale.shape[0],) + (1,) * (weight_grad.ndim - 1)
+        weight_grad /= (w_scale.reshape(view_shape) ** 2)
+
+        bias_grad = layer_grads["bias"].astype(np.float32, copy=True)
+        bias_grad /= ((x_scale * w_scale) ** 2)
+
+        scaled_grads[layer_name] = {
+            "weight": weight_grad,
+            "bias": bias_grad,
+        }
+
+    return scaled_grads
+
+
+def project_quantized_parameters(params: dict[str, dict[str, np.ndarray]]) -> None:
+    """
+    将训练后的参数投影回合法量化域.
+    """
+    for layer_name in TRAINABLE_LAYERS:
+        params[layer_name]["weight"] = np.clip(
+            np.round(params[layer_name]["weight"]),
+            INT8_QMIN,
+            INT8_QMAX,
+        ).astype(np.float32)
+
+        params[layer_name]["bias"] = np.clip(
+            np.round(params[layer_name]["bias"]),
+            INT32_QMIN,
+            INT32_QMAX,
+        ).astype(np.float32)

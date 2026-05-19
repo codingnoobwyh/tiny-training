@@ -3,7 +3,6 @@ from .train_utils import (
     build_train_result,
     get_run_dir,
     save_json,
-    save_step_txt_dump,
 )
 
 __all__ = [
@@ -15,5 +14,4 @@ __all__ = [
     "build_train_result",
     "get_run_dir",
     "save_json",
-    "save_step_txt_dump",
 ]

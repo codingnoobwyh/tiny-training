@@ -1,13 +1,13 @@
 """
-MNIST量化前向推理 - 使用简化算子
+Mnist量化前向推理 - 使用简化算子
 
-这个实现完全按照torch_impl/QuantizedMNISTNet的结构,
+这个实现完全按照torch_impl/QasMnistNet的结构,
 但使用简化后的算子, 便于调试和理解.
 """
 
 import numpy as np
 from .loss import cross_entropy_backward
-from .ops import (
+from .operators import (
     conv2d_3x3_int,
     conv2d_3x3_int_backward,
     relu_int,
@@ -23,7 +23,7 @@ from .ops import (
 )
 
 
-class QuantizedMNISTNet:
+class QasMnistNet:
     """
     网络结构：
     - 输入量化
@@ -266,8 +266,3 @@ class QuantizedMNISTNet:
         """
         grad_logits = cross_entropy_backward(self.cache["logits"], labels)
         return self.backward(grad_logits)
-
-    def predict(self, x_fp: np.ndarray) -> np.ndarray:
-        """预测类别"""
-        logits = self.forward(x_fp)
-        return np.argmax(logits, axis=1)

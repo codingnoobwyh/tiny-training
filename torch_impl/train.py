@@ -9,14 +9,15 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from common.constants import (
-    DEFAULT_BATCH_SIZE,
+    DEFAULT_FINETUNE_BATCH_SIZE,
+    DEFAULT_FINETUNE_EPOCHS,
+    DEFAULT_FINETUNE_NUM_WORKERS,
+    DEFAULT_FINETUNE_TEST_BATCH_SIZE,
     DEFAULT_MOMENTUM,
-    DEFAULT_NUM_WORKERS,
     DEFAULT_PTQ_CHECKPOINT_PATH,
     DEFAULT_QAS_LR,
     DEFAULT_QUANTIZED_LR,
     DEFAULT_SEED,
-    DEFAULT_TEST_BATCH_SIZE,
 )
 from common.dataset import DEFAULT_DATA_ROOT, build_data_loaders
 from common.train_utils import build_train_result, get_run_dir, load_checkpoint, save_checkpoint, save_json, torch_train_one_epoch
@@ -32,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["quantized", "qas"], required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--init-from", default=DEFAULT_PTQ_CHECKPOINT_PATH)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=DEFAULT_FINETUNE_EPOCHS)
     return parser.parse_args()
 
 
@@ -60,9 +61,9 @@ def main() -> None:
 
     train_loader, _ = build_data_loaders(
         DEFAULT_DATA_ROOT,
-        DEFAULT_BATCH_SIZE,
-        DEFAULT_TEST_BATCH_SIZE,
-        DEFAULT_NUM_WORKERS,
+        DEFAULT_FINETUNE_BATCH_SIZE,
+        DEFAULT_FINETUNE_TEST_BATCH_SIZE,
+        DEFAULT_FINETUNE_NUM_WORKERS,
     )
     model, optimizer, lr, init_from_mode = build_model_and_optimizer(args)
     criterion = nn.CrossEntropyLoss()
@@ -82,7 +83,6 @@ def main() -> None:
             desc=f"{args.mode} train {epoch + 1}/{args.epochs}",
             epoch_index=epoch,
             global_step_start=global_step,
-            run_dir=run_dir,
             pre_step=optimizer.pre_step if isinstance(optimizer, QASSGD) else None,
             post_step=project_quantized_parameters,
         )
@@ -95,7 +95,6 @@ def main() -> None:
     save_checkpoint(run_dir / "checkpoint.pt", {
         "mode": args.mode,
         "model_state_dict": model.state_dict(),
-        "train_config": train_result,
     })
     print(f"Saved training artifacts to {run_dir}")
 

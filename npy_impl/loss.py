@@ -5,7 +5,7 @@ NumPy 版分类损失与基础指标.
 import numpy as np
 
 
-def softmax(logits: np.ndarray) -> np.ndarray:
+def _softmax(logits: np.ndarray) -> np.ndarray:
     """
     softmax
 
@@ -50,16 +50,9 @@ def cross_entropy_backward(logits: np.ndarray, labels: np.ndarray) -> np.ndarray
     Returns:
         dL/dlogits, shape (N, C)
     """
-    probs = softmax(logits).astype(np.float32, copy=False)
+    probs = _softmax(logits).astype(np.float32, copy=False)
     grad_logits = probs.copy()
     grad_logits[np.arange(logits.shape[0]), labels] -= 1.0
     grad_logits /= logits.shape[0]
     return grad_logits.astype(np.float32, copy=False)
 
-
-def top1_accuracy(logits: np.ndarray, labels: np.ndarray) -> float:
-    """
-    计算 top1 准确率, 返回百分比.
-    """
-    predictions = np.argmax(logits, axis=1)
-    return float(np.mean(predictions == labels) * 100.0)

@@ -10,19 +10,21 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from common.constants import (
-    DEFAULT_BATCH_SIZE,
+    DEFAULT_BASELINE_BATCH_SIZE,
+    DEFAULT_BASELINE_EPOCHS,
+    DEFAULT_BASELINE_NUM_WORKERS,
     DEFAULT_BASELINE_RUN_NAME,
+    DEFAULT_BASELINE_TEST_BATCH_SIZE,
     DEFAULT_LR,
     DEFAULT_MOMENTUM,
-    DEFAULT_NUM_WORKERS,
     DEFAULT_QAT_LR,
     DEFAULT_SEED,
-    DEFAULT_TEST_BATCH_SIZE,
 )
 from common.baseline.models import (
     FloatMnistNet,
     QuantizedMnistNet,
     build_qat_model,
+    export_float_onnx_model,
     initialize_qat_from_float,
 )
 from common.dataset import DEFAULT_DATA_ROOT, build_data_loaders
@@ -40,9 +42,9 @@ def _make_train_result(args, mode: str, lr: float, epoch_history: list, step_his
         "init_from_mode": "float" if init_from else None,
         "seed": DEFAULT_SEED,
         "epochs": args.epochs,
-        "batch_size": DEFAULT_BATCH_SIZE,
-        "test_batch_size": DEFAULT_TEST_BATCH_SIZE,
-        "num_workers": DEFAULT_NUM_WORKERS,
+        "batch_size": DEFAULT_BASELINE_BATCH_SIZE,
+        "test_batch_size": DEFAULT_BASELINE_TEST_BATCH_SIZE,
+        "num_workers": DEFAULT_BASELINE_NUM_WORKERS,
         "momentum": DEFAULT_MOMENTUM,
         "effective_lr": lr,
         "epoch_history": epoch_history,
@@ -53,7 +55,7 @@ def _make_train_result(args, mode: str, lr: float, epoch_history: list, step_his
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Baseline pipeline: float → PTQ → QAT")
     parser.add_argument("--run-name", default=DEFAULT_BASELINE_RUN_NAME)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=DEFAULT_BASELINE_EPOCHS)
     parser.add_argument("--calibration-batches", type=int, default=32)
     return parser.parse_args()
 
@@ -71,7 +73,6 @@ def _train_loop(model, optimizer, train_loader, criterion, args, run_dir, mode, 
             desc=f"{mode} train {epoch + 1}/{args.epochs}",
             epoch_index=epoch,
             global_step_start=global_step,
-            run_dir=run_dir,
         )
         epoch_history.append({"epoch": epoch, "train": train_metrics})
         step_history.extend(epoch_steps)
@@ -82,7 +83,6 @@ def _train_loop(model, optimizer, train_loader, criterion, args, run_dir, mode, 
     save_checkpoint(run_dir / "checkpoint.pt", {
         "mode": mode,
         "model_state_dict": model.state_dict(),
-        "train_config": train_result,
     })
     return train_result
 
@@ -93,9 +93,9 @@ def main() -> None:
 
     train_loader, test_loader = build_data_loaders(
         DEFAULT_DATA_ROOT,
-        DEFAULT_BATCH_SIZE,
-        DEFAULT_TEST_BATCH_SIZE,
-        DEFAULT_NUM_WORKERS,
+        DEFAULT_BASELINE_BATCH_SIZE,
+        DEFAULT_BASELINE_TEST_BATCH_SIZE,
+        DEFAULT_BASELINE_NUM_WORKERS,
     )
     criterion = nn.CrossEntropyLoss()
 
@@ -117,17 +117,7 @@ def main() -> None:
     print(f"Float eval: top1={float_metrics['top1']:.2f} loss={float_metrics['loss']:.4f}")
 
     onnx_path = float_dir / "model.onnx"
-    dummy_input = torch.randn(1, 1, 28, 28)
-    torch.onnx.export(
-        float_model.cpu(),
-        dummy_input,
-        str(onnx_path),
-        input_names=["input"],
-        output_names=["logits"],
-        dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
-        dynamo=False,
-        opset_version=17,
-    )
+    export_float_onnx_model(float_model, onnx_path)
     print(f"ONNX exported to {onnx_path}")
 
     float_ckpt_path = str(float_dir / "checkpoint.pt")
@@ -159,15 +149,13 @@ def main() -> None:
         "test_loss": ptq_metrics["loss"],
     }
     save_json(ptq_dir / "eval_result.json", ptq_result)
-    save_json(ptq_dir / "ptq_result.json", ptq_result)
     save_checkpoint(ptq_dir / "checkpoint.pt", {
         "mode": "ptq",
         "model_state_dict": ptq_model.state_dict(),
-        "source_checkpoint": float_ckpt_path,
         "ptq_config": {
-            "batch_size": DEFAULT_BATCH_SIZE,
-            "test_batch_size": DEFAULT_TEST_BATCH_SIZE,
-            "num_workers": DEFAULT_NUM_WORKERS,
+            "batch_size": DEFAULT_BASELINE_BATCH_SIZE,
+            "test_batch_size": DEFAULT_BASELINE_TEST_BATCH_SIZE,
+            "num_workers": DEFAULT_BASELINE_NUM_WORKERS,
             "calibration_batches": args.calibration_batches,
         },
     })
