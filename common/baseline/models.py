@@ -1,7 +1,6 @@
 import torch
 import torch.ao.quantization as tq
 from torch import nn
-from pathlib import Path
 
 from common.train_utils import load_checkpoint
 
@@ -86,20 +85,6 @@ def build_ptq_model() -> nn.Module:
     model.qconfig = tq.get_default_qconfig("fbgemm")
     prepared = tq.prepare(model.eval(), inplace=False)
     return tq.convert(prepared, inplace=False)
-
-
-def export_float_onnx_model(model: nn.Module, output_path: str | Path) -> None:
-    dummy_input = torch.randn(1, 1, 28, 28)
-    torch.onnx.export(
-        model.cpu(),
-        dummy_input,
-        str(output_path),
-        input_names=["input"],
-        output_names=["logits"],
-        dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
-        dynamo=False,
-        opset_version=17,
-    )
 
 
 def initialize_qat_from_float(model: nn.Module, init_from: str) -> None:

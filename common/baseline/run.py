@@ -24,7 +24,6 @@ from common.baseline.models import (
     FloatMnistNet,
     QuantizedMnistNet,
     build_qat_model,
-    export_float_onnx_model,
     initialize_qat_from_float,
 )
 from common.dataset import DEFAULT_DATA_ROOT, build_data_loaders
@@ -115,10 +114,6 @@ def main() -> None:
         "test_loss": float_metrics["loss"],
     })
     print(f"Float eval: top1={float_metrics['top1']:.2f} loss={float_metrics['loss']:.4f}")
-
-    onnx_path = float_dir / "model.onnx"
-    export_float_onnx_model(float_model, onnx_path)
-    print(f"ONNX exported to {onnx_path}")
 
     float_ckpt_path = str(float_dir / "checkpoint.pt")
 

@@ -69,3 +69,25 @@ def load_mnist_float(
         images = images[:, None, :, :]
     labels = labels.astype(np.int64)
     return images, labels
+
+
+def export_mnist_fp32_payload(
+    data_root: str | Path,
+    output_dir: str | Path,
+    *,
+    train: bool = False,
+    count: int = 100,
+) -> list[Path]:
+    images, _ = load_mnist_float(data_root, train=train, add_channel_dim=True)
+    images = np.ascontiguousarray(images[:count].astype(np.float32, copy=False))
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    split = "train" if train else "test"
+
+    output_paths = []
+    for index, image in enumerate(images):
+        output_path = output_dir / f"{split}_{index:05d}.bin"
+        image.tofile(output_path)
+        output_paths.append(output_path)
+    return output_paths
