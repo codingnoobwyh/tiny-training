@@ -31,15 +31,6 @@ support_parallel=false
 """
 
 
-class ModelWithSoftmax(torch.nn.Module):
-    def __init__(self, model: torch.nn.Module):
-        super().__init__()
-        self.model = model
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.softmax(self.model(x), dim=1)
-
-
 def ensure_micro_config(config_path: Path = DEFAULT_CONFIG_PATH) -> None:
     if config_path.exists():
         return
@@ -76,7 +67,6 @@ def export_float_onnx_model(checkpoint_path: Path = DEFAULT_CHECKPOINT_PATH, out
 
     model = FloatMnistNet()
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
-    model = ModelWithSoftmax(model)
     model.eval()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +76,7 @@ def export_float_onnx_model(checkpoint_path: Path = DEFAULT_CHECKPOINT_PATH, out
         dummy_input,
         str(output_path),
         input_names=["input"],
-        output_names=["probabilities"],
+        output_names=["logits"],
         dynamo=False,
         opset_version=17,
     )
@@ -105,7 +95,7 @@ def export_onnx_golden(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shape = " ".join(str(dim) for dim in output.shape)
     values = " ".join(f"{value:.9g}" for value in output.reshape(-1))
-    output_path.write_text(f"probabilities {output.ndim} {shape}\n{values}\n")
+    output_path.write_text(f"logits {output.ndim} {shape}\n{values}\n")
 
 
 def export_micro_artifacts() -> None:

@@ -80,5 +80,6 @@ PY
     "${benchmark_bin}" "${BENCHMARK_INPUT}"
 }
 
+clear
 compile_micro_quant
 run_benchmark
