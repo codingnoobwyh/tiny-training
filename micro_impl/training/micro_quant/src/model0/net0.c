@@ -18,202 +18,261 @@
 #include "src/model0/net0.h"
 #include "src/model0/weight0.h"
 
-#define BENCHMARK
-
-#ifdef BENCHMARK
 #include <stdio.h>
-static void PrintTop10Grads(const char *name, const float *data, int size)
-{
-    int print_size = size < 10 ? size : 10;
-    printf("   %s:\t", name);
-    for (int i = 0; i < print_size; ++i) {
-        printf("%.3e\t", data[i]);
+
+const unsigned char *m0_input0 = 0;
+int m0_label0 = 0;
+
+static const int kM0InferenceBufferSize = 30948;
+static const int kM0BackwardBufferSize = 1007592;
+/*
+ * Buffer layout after the generated inference buffers:
+ *   30948 .. 30987   ce_label_fp32            40
+ *   30988 .. 31027   ce_prob_fp32             40
+ *   31028 .. 31031   ce_sum_data_fp32         4
+ *   31032 .. 31071   ce_grad_logits_fp32      40
+ *   31072 .. 31075   ce_loss_fp32             4
+ *   31076 .. 31587   fc2_grad_input_fp32      512
+ *   31588 .. 36707   fc2_grad_weight_fp32     5120
+ *   36708 .. 36747   fc2_grad_bias_fp32       40
+ *   36748 .. 37259   fc1_grad_output_fp32     512
+ *   37260 .. 43531   fc1_grad_input_fp32      6272
+ *   43532 .. 44043   fc1_grad_bias_fp32       512
+ *   44044 .. 846859  fc1_grad_weight_fp32     802816
+ *   846860 .. 853131 flatten_grad_output      6272
+ *   853132 .. 878219 pool2_grad_input_fp32    25088
+ *   878220 .. 903307 relu2_grad_input_fp32    25088
+ *   903308 .. 915851 conv2_grad_input_fp32    12544
+ *   915852 .. 934283 conv2_grad_weight_fp32   18432
+ *   934284 .. 934411 conv2_grad_bias_fp32     128
+ *   934412 .. 984587 pool1_grad_input_fp32    50176
+ *   984588 .. 1034763 conv1_grad_output_fp32  50176
+ *   1034764 .. 1037899 conv1_grad_input_fp32  3136
+ *   1037900 .. 1038475 conv1_grad_weight_fp32 576
+ *   1038476 .. 1038539 conv1_grad_bias_fp32   64
+ */
+static const int kM0CeLabelOffset = 30948;
+static const int kM0CeProbOffset = 30988;
+static const int kM0CeSumOffset = 31028;
+static const int kM0CeGradLogitsOffset = 31032;
+static const int kM0CeLossOffset = 31072;
+static const int kM0Fc2GradInputOffset = 31076;
+static const int kM0Fc2GradWeightOffset = 31588;
+static const int kM0Fc2GradBiasOffset = 36708;
+static const int kM0Fc1GradOutputOffset = 36748;
+static const int kM0Fc1GradInputOffset = 37260;
+static const int kM0Fc1GradBiasOffset = 43532;
+static const int kM0Fc1GradWeightOffset = 44044;
+static const int kM0FlattenGradOutputOffset = 846860;
+static const int kM0Pool2GradInputOffset = 853132;
+static const int kM0Relu2GradInputOffset = 878220;
+static const int kM0Conv2GradInputOffset = 903308;
+static const int kM0Conv2GradWeightOffset = 915852;
+static const int kM0Conv2GradBiasOffset = 934284;
+static const int kM0Pool1GradInputOffset = 934412;
+static const int kM0Conv1GradOutputOffset = 984588;
+static const int kM0Conv1GradInputOffset = 1034764;
+static const int kM0Conv1GradWeightOffset = 1037900;
+static const int kM0Conv1GradBiasOffset = 1038476;
+
+static void PrintTop10Grads(const char *name, const float *data, int length) {
+    printf("   %s top10:", name);
+    int count = length < 10 ? length : 10;
+    for (int i = 0; i < count; ++i) {
+        printf(" %.9g", data[i]);
     }
     printf("\n");
 }
 
-static void DumpGradsToFile(const char *name, const float *data, int size)
-{
-    char file_name[128];
-    snprintf(file_name, sizeof(file_name), "micro_grad_%s.txt", name);
-    FILE *file = fopen(file_name, "w");
+static void DumpGradsToFile(const char *name, const float *data, int length) {
+    char path[128];
+    snprintf(path, sizeof(path), "micro_grad_%s.txt", name);
+    FILE *file = fopen(path, "w");
     if (file == NULL) {
-        printf("   dump %s failed\n", file_name);
+        printf("   dump %s failed\n", path);
         return;
     }
-    for (int i = 0; i < size; ++i) {
-        fprintf(file, "%.9e\n", data[i]);
+    for (int i = 0; i < length; ++i) {
+        fprintf(file, "%.9g\n", data[i]);
     }
     fclose(file);
 }
 
-static void PrintAndDumpGrads(const char *name, const float *data, int size)
-{
-    PrintTop10Grads(name, data, size);
-    DumpGradsToFile(name, data, size);
+static void DumpInt8TensorToFile(const char *name, const int8_t *data, int length) {
+    char path[128];
+    snprintf(path, sizeof(path), "micro_activation_%s.txt", name);
+    FILE *file = fopen(path, "w");
+    if (file == NULL) {
+        printf("   dump %s failed\n", path);
+        return;
+    }
+    for (int i = 0; i < length; ++i) {
+        fprintf(file, "%d\n", (int)data[i]);
+    }
+    fclose(file);
 }
-#else
-#define printf(...) ((void)0)
-#define PrintTop10Grads(...) ((void)0)
-#define DumpGradsToFile(...) ((void)0)
-#define PrintAndDumpGrads(...) ((void)0)
-#endif
 
-const unsigned char *m0_input0 = 0;
-static int m0_label0 = 0;
+static void PrintAndDumpGrads(const char *name, const float *data, int length) {
+    PrintTop10Grads(name, data, length);
+    DumpGradsToFile(name, data, length);
+}
 
-static const int kM0InferenceBufferSize = 66528;
-static const int kM0CeBufferSize = 128;
-static const int kM0QasBackwardBufferSize = 1007464;
+static void FullyConnectedQASBackward(const float *grad_output,
+                                      const int8_t *input, const int8_t *weight,
+                                      const float *effective_scale,
+                                      int input_zp, int input_size,
+                                      int output_size, float output_grad_scale,
+                                      float *grad_input, float *grad_weight,
+                                      float *grad_bias) {
+    for (int i = 0; i < input_size; ++i) {
+        grad_input[i] = 0.0f;
+    }
+    for (int o = 0; o < output_size; ++o) {
+        float grad_linear_out =
+            grad_output[o] * output_grad_scale * effective_scale[o];
+        grad_bias[o] = grad_linear_out;
+        for (int i = 0; i < input_size; ++i) {
+            int input_centered = (int)input[i] - input_zp;
+            int weight_centered = (int)weight[o * input_size + i];
+            grad_weight[o * input_size + i] =
+                grad_linear_out * (float)input_centered;
+            grad_input[i] += grad_linear_out * (float)weight_centered;
+        }
+    }
+}
 
-static const int kM0Fc2GradInputOffset = 66656;
-static const int kM0Fc2GradWeightOffset = 67168;
-static const int kM0Fc2GradBiasOffset = 72288;
-static const int kM0Fc1GradOutputOffset = 72328;
-static const int kM0Fc1GradInputOffset = 72840;
-static const int kM0Fc1GradBiasOffset = 79112;
-static const int kM0Fc1GradWeightOffset = 79624;
-static const int kM0FlattenGradOutputOffset = 882440;
-static const int kM0Pool2GradInputOffset = 888712;
-static const int kM0Relu2GradInputOffset = 913800;
+static void ReluXQASBackward(const float *grad_output, const int8_t *relu_input,
+                             int length, int act_min, float *grad_input) {
+    for (int i = 0; i < length; ++i) {
+        grad_input[i] = (relu_input[i] >= act_min && relu_input[i] <= 127)
+                            ? grad_output[i]
+                            : 0.0f;
+    }
+}
 
-/* Bind model input buffers. This training graph has image input plus sparse label. */
+static void FlattenNCHWToNHWCBackward(const float *grad_output,
+                                      float *grad_input, int height, int width,
+                                      int channel) {
+    for (int h = 0; h < height; ++h) {
+        for (int w = 0; w < width; ++w) {
+            for (int c = 0; c < channel; ++c) {
+                grad_input[(h * width + w) * channel + c] =
+                    grad_output[(c * height + h) * width + w];
+            }
+        }
+    }
+}
+
+static void MaxPool2x2QASBackwardNHWC(const float *grad_output,
+                                      const int8_t *pool_input, int input_h,
+                                      int input_w, int channel,
+                                      float *grad_input) {
+    int output_h = input_h / 2;
+    int output_w = input_w / 2;
+    for (int i = 0; i < input_h * input_w * channel; ++i) {
+        grad_input[i] = 0.0f;
+    }
+    for (int oh = 0; oh < output_h; ++oh) {
+        for (int ow = 0; ow < output_w; ++ow) {
+            for (int c = 0; c < channel; ++c) {
+                int base_h = oh * 2;
+                int base_w = ow * 2;
+                int max_index = (base_h * input_w + base_w) * channel + c;
+                int8_t max_value = pool_input[max_index];
+                for (int kh = 0; kh < 2; ++kh) {
+                    for (int kw = 0; kw < 2; ++kw) {
+                        int index =
+                            ((base_h + kh) * input_w + base_w + kw) * channel +
+                            c;
+                        if (pool_input[index] > max_value) {
+                            max_value = pool_input[index];
+                            max_index = index;
+                        }
+                    }
+                }
+                grad_input[max_index] +=
+                    grad_output[(oh * output_w + ow) * channel + c];
+            }
+        }
+    }
+}
+
+static void Conv2d3x3SameQASBackwardNHWC(const float *grad_output,
+                                         const int8_t *input,
+                                         const int8_t *weight,
+                                         const float *effective_scale,
+                                         int input_zp, int input_h,
+                                         int input_w, int input_c,
+                                         int output_c,
+                                         float output_grad_scale,
+                                         float *grad_input,
+                                         float *grad_weight,
+                                         float *grad_bias) {
+    int input_size = input_h * input_w * input_c;
+    int weight_size = output_c * 3 * 3 * input_c;
+    for (int i = 0; i < input_size; ++i) {
+        grad_input[i] = 0.0f;
+    }
+    for (int i = 0; i < weight_size; ++i) {
+        grad_weight[i] = 0.0f;
+    }
+    for (int oc = 0; oc < output_c; ++oc) {
+        grad_bias[oc] = 0.0f;
+    }
+
+    for (int oh = 0; oh < input_h; ++oh) {
+        for (int ow = 0; ow < input_w; ++ow) {
+            for (int oc = 0; oc < output_c; ++oc) {
+                float grad_linear_out =
+                    grad_output[(oh * input_w + ow) * output_c + oc] *
+                    output_grad_scale * effective_scale[oc];
+                grad_bias[oc] += grad_linear_out;
+                for (int kh = 0; kh < 3; ++kh) {
+                    int ih = oh + kh - 1;
+                    if (ih < 0 || ih >= input_h) {
+                        continue;
+                    }
+                    for (int kw = 0; kw < 3; ++kw) {
+                        int iw = ow + kw - 1;
+                        if (iw < 0 || iw >= input_w) {
+                            continue;
+                        }
+                        for (int ic = 0; ic < input_c; ++ic) {
+                            int input_index = (ih * input_w + iw) * input_c + ic;
+                            int weight_index = ((oc * 3 + kh) * 3 + kw) * input_c + ic;
+                            int input_centered = (int)input[input_index] - input_zp;
+                            int weight_centered = (int)weight[weight_index];
+                            grad_weight[weight_index] +=
+                                grad_linear_out * (float)input_centered;
+                            grad_input[input_index] +=
+                                grad_linear_out * (float)weight_centered;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 int SetInputs0(const void **inputs, int num) {
     if (inputs == NULL) {
         return RET_ERROR;
     }
-    if (num != 2 || inputs[1] == NULL) {
+    if (num != 2 || inputs[0] == NULL || inputs[1] == NULL) {
         return RET_ERROR;
     }
     m0_input0 = (unsigned char *)inputs[0];
-    m0_label0 = *((const int *)inputs[1]);
+    m0_label0 = *((const int32_t *)inputs[1]);
     if (m0_label0 < 0 || m0_label0 >= 10) {
         return RET_ERROR;
     }
     return RET_OK;
 }
-
-static void FullyConnectedQASBackward(const float *grad_output, const int8_t *input, const int8_t *weight,
-                                      const float *effective_scale, int zero_x, int input_dim, int output_dim,
-                                      float output_grad_scale, float *grad_input, float *grad_weight,
-                                      float *grad_bias)
-{
-    for (int i = 0; i < input_dim; ++i) {
-        grad_input[i] = 0.0f;
-    }
-    for (int o = 0; o < output_dim; ++o) {
-        float grad_linear_out = grad_output[o] * output_grad_scale * effective_scale[o];
-        if (grad_bias != NULL) {
-            grad_bias[o] = grad_linear_out;
-        }
-        for (int i = 0; i < input_dim; ++i) {
-            float input_centered = (float)input[i] - (float)zero_x;
-            float grad_w = grad_linear_out * input_centered;
-            if (grad_weight != NULL) {
-                grad_weight[o * input_dim + i] = grad_w;
-            }
-            grad_input[i] += grad_linear_out * (float)weight[o * input_dim + i];
-        }
-    }
-}
-
-static void ReluXQASBackward(const float *grad_output, const int8_t *input, int input_dim, int zero_y,
-                             float *grad_input)
-{
-    for (int i = 0; i < input_dim; ++i) {
-        grad_input[i] = (input[i] >= zero_y && input[i] <= 127) ? grad_output[i] : 0.0f;
-    }
-}
-
-static void FlattenNCHWToNHWCBackward(const float *grad_output_nchw, float *grad_input_nhwc, int height, int width,
-                                      int channel)
-{
-    for (int h = 0; h < height; ++h) {
-        for (int w = 0; w < width; ++w) {
-            for (int c = 0; c < channel; ++c) {
-                grad_input_nhwc[(h * width + w) * channel + c] = grad_output_nchw[c * height * width + h * width + w];
-            }
-        }
-    }
-}
-
-static void MaxPool2x2QASBackwardNHWC(const float *grad_output, const int8_t *input, int in_h, int in_w, int channel,
-                                      float *grad_input)
-{
-    int out_h = in_h / 2;
-    int out_w = in_w / 2;
-    for (int i = 0; i < in_h * in_w * channel; ++i) {
-        grad_input[i] = 0.0f;
-    }
-    for (int h = 0; h < out_h; ++h) {
-        for (int w = 0; w < out_w; ++w) {
-            for (int c = 0; c < channel; ++c) {
-                int base = ((h * 2) * in_w + (w * 2)) * channel + c;
-                int idx0 = base;
-                int idx1 = base + channel;
-                int idx2 = base + in_w * channel;
-                int idx3 = idx2 + channel;
-                int max_idx = idx0;
-                if (input[idx1] > input[max_idx]) {
-                    max_idx = idx1;
-                }
-                if (input[idx2] > input[max_idx]) {
-                    max_idx = idx2;
-                }
-                if (input[idx3] > input[max_idx]) {
-                    max_idx = idx3;
-                }
-                grad_input[max_idx] += grad_output[(h * out_w + w) * channel + c];
-            }
-        }
-    }
-}
-
-/* Runtime arena size used by m0_buffer.
- *
- * Buffer layout:
- *   ----------------------------- inference -----------------------------
- *   0     .. 3135    input_nhwc_fp32          3136   fp32, 1*28*28*4
- *   3136  .. 3919    input_int8               784    int8, 1*28*28
- *   3936  .. 16479   conv1_out_nhwc_int8      12544  int8, 1*28*28*16
- *   16480 .. 19615   pool1_out_int8           3136   int8, 1*14*14*16
- *   19616 .. 25887   conv2_out_nhwc_int8      6272   int8, 1*14*14*32
- *   25888 .. 27455   pool2_out_int8           1568   int8, 1*7*7*32
- *   27456 .. 29023   flatten_tmp_nchw_int8    1568   int8
- *   29024 .. 30591   fc1_input_int8_copy      1568   int8
- *   30592 .. 30719   fc1_out_int8             128    int8
- *   30720 .. 30847   relu3_out_int8           128    int8
- *   30848 .. 30857   fc2_out_int8             10     int8 logits code
- *   30880 .. 30919   logits_fp32              40     fp32 model output
- *   30944 .. 66527   operator workspace       35584  int8 conv/matmul temp buffers
- *   ----------------------------- inference -----------------------------
- *   ----------------------------- backward ------------------------------
- *   66528 .. 66567   ce_labels_fp32           40     fp32 one-hot label workspace
- *   66568 .. 66607   ce_prob_fp32             40     fp32 softmax workspace
- *   66608 .. 66611   ce_sum_data_fp32         4      fp32 softmax reduction workspace
- *   66612 .. 66651   ce_grad_logits_fp32      40     fp32, valid after Execute0(true)
- *   66652 .. 66655   ce_loss_fp32             4      fp32, valid after Execute0(true)
- *   66656 .. 67167   fc2_grad_input_fp32      512    fp32, 128
- *   67168 .. 72287   fc2_grad_weight_fp32     5120   fp32, 10*128
- *   72288 .. 72327   fc2_grad_bias_fp32       40     fp32, 10
- *   72328 .. 72839   fc1_grad_output_fp32     512    fp32, after ReLU backward
- *   72840 .. 79111   fc1_grad_input_fp32      6272   fp32, 1568
- *   79112 .. 79623   fc1_grad_bias_fp32       512    fp32, 128
- *   79624 .. 882439  fc1_grad_weight_fp32     802816 fp32, 128*1568
- *   882440.. 888711  flatten_grad_output_fp32 6272   fp32, NHWC 1*7*7*32
- *   888712.. 913799  pool2_grad_input_fp32    25088  fp32, NHWC 1*14*14*32
- *   913800.. 938887  relu2_grad_input_fp32    25088  fp32, NHWC 1*14*14*32
- *   ----------------------------- backward ------------------------------
- */
-int GetBufferSize0() { 
-    return kM0InferenceBufferSize + kM0CeBufferSize + kM0QasBackwardBufferSize;
-}
-
+int GetBufferSize0() { return kM0InferenceBufferSize + kM0BackwardBufferSize; }
 int SetBuffer0(void *buffer) {
     m0_buffer = (unsigned char *)buffer;
     return RET_OK;
 }
-
 void FreeResource0() {
     m0_buffer = NULL;
     m0_input0 = NULL;
@@ -239,11 +298,11 @@ void Execute0(bool train_mode) {
                              0.003921568859368562698, -128, 784, -128, 127);
     }
     {
-        memset((int16_t *)(m0_buffer + 30944), 0, 2048);
-        memset((int16_t *)(m0_buffer + 32992), 0, 256);
-        memset((int32_t *)(m0_buffer + 33248), 0, 8192);
-        memset((int8_t *)(m0_buffer + 41440), 0, 12544);
-        memset((int16_t *)(m0_buffer + 53984), 0, 12544);
+        const int32_t unified_scale_int32[16] = {
+            2304, 1995, 755,  2025, 1552, 996,  2446, 1675,
+            915,  1310, 1470, 1990, 1663, 1970, 2101, 682};
+        const int32_t input_shape[4] = {1, 28, 28, 1};
+        const int32_t output_shape[4] = {1, 28, 28, 16};
         QuantArg conv_param__quant_arg_in[1] = {
             {0.003921568859368562698, -128}};
         QuantArg conv_param__quant_arg_w[16] = {
@@ -324,15 +383,10 @@ void Execute0(bool train_mode) {
                                      0,
                                      0,
                                      0};
-        PackInputToC8Int8((int8_t *)(m0_buffer + 3136),
-                          (int16_t *)(m0_buffer + 53984), &conv_param_);
-        Conv3x3Int8(
-            (int16_t *)(m0_buffer + 53984), m0_weight10, m0_weight11,
-            (int8_t *)(m0_buffer + 3936), (int16_t *)(m0_buffer + 30944),
-            (int16_t *)(m0_buffer + 32992), (int32_t *)(m0_buffer + 33248),
-            (int8_t *)(m0_buffer + 41440), 0, &conv_param_);
-        PackNC4HW4ToNHWCInt8((int8_t *)(m0_buffer + 41440),
-                             (int8_t *)(m0_buffer + 3936), 1, 784, 16);
+        Conv3x3Int8LowMemory((int8_t *)(m0_buffer + 3136),
+                             (int8_t *)(m0_buffer + 3936), m0_weight10,
+                             m0_weight11, -128, unified_scale_int32, -128,
+                             input_shape, output_shape, &conv_param_);
     }
     {
         const PoolingParameter pooling_parameter = {{"", 92, m0_thread_num, 0},
@@ -361,11 +415,12 @@ void Execute0(bool train_mode) {
                           &compute, quant);
     }
     {
-        memset((int16_t *)(m0_buffer + 30944), 0, 4096);
-        memset((int16_t *)(m0_buffer + 35040), 0, 256);
-        memset((int32_t *)(m0_buffer + 35296), 0, 16384);
-        memset((int8_t *)(m0_buffer + 51680), 0, 6272);
-        memset((int16_t *)(m0_buffer + 57952), 0, 6272);
+        const int32_t unified_scale_int32[32] = {
+            3399, 2054, 2447, 1882, 1952, 1131, 5446, 2528, 1597, 2205, 2240,
+            1419, 3307, 3284, 2607, 2265, 5483, 5155, 1970, 2437, 2438, 3609,
+            4189, 5438, 5627, 2845, 1345, 4339, 2416, 4350, 3048, 2709};
+        const int32_t input_shape[4] = {1, 14, 14, 16};
+        const int32_t output_shape[4] = {1, 14, 14, 32};
         QuantArg conv_param__quant_arg_in[1] = {{0.01951933093369007111, -128}};
         QuantArg conv_param__quant_arg_w[32] = {
             {0.001061098417267203331, 0},  {0.001755995675921440125, 0},
@@ -466,15 +521,10 @@ void Execute0(bool train_mode) {
                                      0,
                                      0,
                                      0};
-        PackInputToC8Int8((int8_t *)(m0_buffer + 16480),
-                          (int16_t *)(m0_buffer + 57952), &conv_param_);
-        Conv3x3Int8(
-            (int16_t *)(m0_buffer + 57952), m0_weight12, m0_weight13,
-            (int8_t *)(m0_buffer + 19616), (int16_t *)(m0_buffer + 30944),
-            (int16_t *)(m0_buffer + 35040), (int32_t *)(m0_buffer + 35296),
-            (int8_t *)(m0_buffer + 51680), 0, &conv_param_);
-        PackNC4HW4ToNHWCInt8((int8_t *)(m0_buffer + 51680),
-                             (int8_t *)(m0_buffer + 19616), 1, 196, 32);
+        Conv3x3Int8LowMemory((int8_t *)(m0_buffer + 16480),
+                             (int8_t *)(m0_buffer + 19616), m0_weight12,
+                             m0_weight13, -128, unified_scale_int32, -128,
+                             input_shape, output_shape, &conv_param_);
     }
     {
         const PoolingParameter pooling_parameter = {{"", 92, m0_thread_num, 0},
@@ -712,54 +762,71 @@ void Execute0(bool train_mode) {
         DoDequantizeInt8ToFp32((int8_t *)(m0_buffer + 30848),
                                (float *)(m0_buffer + 30880),
                                0.1316215097904205322, -5, 10);
+        DumpInt8TensorToFile("input_quant", (int8_t *)(m0_buffer + 3136), 28 * 28);
+        DumpInt8TensorToFile("conv1_out", (int8_t *)(m0_buffer + 3936), 28 * 28 * 16);
+        DumpInt8TensorToFile("pool1_out", (int8_t *)(m0_buffer + 16480), 14 * 14 * 16);
+        DumpInt8TensorToFile("conv2_out", (int8_t *)(m0_buffer + 19616), 14 * 14 * 32);
+        DumpInt8TensorToFile("pool2_out", (int8_t *)(m0_buffer + 25888), 7 * 7 * 32);
+        DumpInt8TensorToFile("fc1_input", (int8_t *)(m0_buffer + 29024), 1568);
+        DumpInt8TensorToFile("fc1_pre_relu", (int8_t *)(m0_buffer + 30592), 128);
+        DumpInt8TensorToFile("relu3_out", (int8_t *)(m0_buffer + 30720), 128);
+        DumpInt8TensorToFile("fc2_out", (int8_t *)(m0_buffer + 30848), 10);
     }
-    /* ===== Training loss: fp32 logits -> softmax probabilities -> cross entropy ===== */
-    printf("\n[*] Training:\n");
     {
-        float *labels = (float *)(m0_buffer + 66528);
-        float *prob = (float *)(m0_buffer + 66568);
-        float *sum_data = (float *)(m0_buffer + 66608);
-        float *grad_logits = (float *)(m0_buffer + 66612);
-        float *loss = (float *)(m0_buffer + 66652);
+        float *labels = (float *)(m0_buffer + kM0CeLabelOffset);
+        float *prob = (float *)(m0_buffer + kM0CeProbOffset);
+        float *sum_data = (float *)(m0_buffer + kM0CeSumOffset);
+        float *grad_logits = (float *)(m0_buffer + kM0CeGradLogitsOffset);
+        float *loss = (float *)(m0_buffer + kM0CeLossOffset);
         int input_shape[] = {1, 10, 0, 0, 0};
         for (int i = 0; i < 10; ++i) {
             labels[i] = 0.0f;
         }
         labels[m0_label0] = 1.0f;
-        Softmax((float *)(m0_buffer + 30880), prob, sum_data, 1, 2, input_shape);
+        Softmax((float *)(m0_buffer + 30880), prob, sum_data, 1, 2,
+                input_shape);
         ForwardPostExecute(labels, prob, grad_logits, loss, 10, 1);
         printf("1. Softmax && Cross Entropy\n   loss: %f\n", loss[0]);
         PrintAndDumpGrads("ce_grad_logits", grad_logits, 10);
     }
     {
-        const float fc2_filter_scale[10] = {
+        float *fc2_grad_input = (float *)(m0_buffer + kM0Fc2GradInputOffset);
+        float *fc2_grad_weight = (float *)(m0_buffer + kM0Fc2GradWeightOffset);
+        float *fc2_grad_bias = (float *)(m0_buffer + kM0Fc2GradBiasOffset);
+        const float filter_scale[10] = {
             0.001925971242599189281f, 0.001776357647031545639f,
             0.002733679721131920815f, 0.00220415974035859108f,
             0.001976877916604280472f, 0.002213228959590196609f,
             0.002378750592470169067f, 0.001968011027202010155f,
-            0.00197996385395526886f, 0.001833997899666428566f};
-        float fc2_effective_scale[10];
+            0.00197996385395526886f,  0.001833997899666428566f};
+        float effective_scale[10];
         for (int i = 0; i < 10; ++i) {
-            fc2_effective_scale[i] = 0.06125869229435920715f * fc2_filter_scale[i] / 0.1316215097904205322f;
+            effective_scale[i] = 0.06125869229435920715f * filter_scale[i] /
+                                 0.1316215097904205322f;
         }
-        FullyConnectedQASBackward((float *)(m0_buffer + 66612), (int8_t *)(m0_buffer + 30720), m0_weight8,
-                                  fc2_effective_scale, -128, 128, 10, 0.1316215097904205322f,
-                                  (float *)(m0_buffer + kM0Fc2GradInputOffset),
-                                  (float *)(m0_buffer + kM0Fc2GradWeightOffset),
-                                  (float *)(m0_buffer + kM0Fc2GradBiasOffset));
+        FullyConnectedQASBackward((float *)(m0_buffer + kM0CeGradLogitsOffset),
+                                  (int8_t *)(m0_buffer + 30720), m0_weight8,
+                                  effective_scale, -128, 128, 10,
+                                  0.1316215097904205322f, fc2_grad_input,
+                                  fc2_grad_weight, fc2_grad_bias);
         printf("2. FullyConnectedQASBackward fc2\n");
-        PrintAndDumpGrads("fc2_grad_input", (float *)(m0_buffer + kM0Fc2GradInputOffset), 128);
-        PrintAndDumpGrads("fc2_grad_weight", (float *)(m0_buffer + kM0Fc2GradWeightOffset), 1280);
-        PrintAndDumpGrads("fc2_grad_bias", (float *)(m0_buffer + kM0Fc2GradBiasOffset), 10);
+        PrintAndDumpGrads("fc2_grad_input", fc2_grad_input, 128);
+        PrintAndDumpGrads("fc2_grad_weight", fc2_grad_weight, 1280);
+        PrintAndDumpGrads("fc2_grad_bias", fc2_grad_bias, 10);
     }
     {
-        ReluXQASBackward((float *)(m0_buffer + kM0Fc2GradInputOffset), (int8_t *)(m0_buffer + 30592), 128, 12,
-                         (float *)(m0_buffer + kM0Fc1GradOutputOffset));
-        printf("3. ReluXQASBackward fc1\n");
-        PrintAndDumpGrads("fc1_grad_output", (float *)(m0_buffer + kM0Fc1GradOutputOffset), 128);
+        float *fc1_grad_output = (float *)(m0_buffer + kM0Fc1GradOutputOffset);
+        ReluXQASBackward((float *)(m0_buffer + kM0Fc2GradInputOffset),
+                         (int8_t *)(m0_buffer + 30592), 128, 12,
+                         fc1_grad_output);
+        printf("3. ReluXQASBackward relu3\n");
+        PrintAndDumpGrads("fc1_grad_output", fc1_grad_output, 128);
     }
     {
-        const float fc1_filter_scale[128] = {
+        float *fc1_grad_input = (float *)(m0_buffer + kM0Fc1GradInputOffset);
+        float *fc1_grad_bias = (float *)(m0_buffer + kM0Fc1GradBiasOffset);
+        float *fc1_grad_weight = (float *)(m0_buffer + kM0Fc1GradWeightOffset);
+        const float filter_scale[128] = {
             0.0004990499583072960377f, 0.0004698942357208579779f,
             0.0004256523388903588057f, 0.0004050525021739304066f,
             0.0005062564159743487835f, 0.0007667241734452545643f,
@@ -767,7 +834,7 @@ void Execute0(bool train_mode) {
             0.0002093825023621320724f, 0.0005332875298336148262f,
             0.0002091564965667203069f, 0.0005324156372807919979f,
             0.0008176540140993893147f, 0.0007420015754178166389f,
-            0.000461498915683478117f, 0.0007401778711937367916f,
+            0.000461498915683478117f,  0.0007401778711937367916f,
             0.0006282987887971103191f, 0.0005517002427950501442f,
             0.0004248088516760617495f, 0.0004579625965561717749f,
             0.0009474725229665637016f, 0.0004808723751921206713f,
@@ -824,36 +891,127 @@ void Execute0(bool train_mode) {
             0.0002005088463192805648f, 0.0004907636321149766445f,
             0.0007347305072471499443f, 0.0002462097618263214827f,
             0.0006546863587573170662f, 0.0002161292650271207094f};
-        float fc1_effective_scale[128];
+        float effective_scale[128];
         for (int i = 0; i < 128; ++i) {
-            fc1_effective_scale[i] = 0.07039272040128707886f * fc1_filter_scale[i] / 0.1358715593814849854f;
+            effective_scale[i] = 0.07039272040128707886f * filter_scale[i] /
+                                 0.1358715593814849854f;
         }
-        FullyConnectedQASBackward((float *)(m0_buffer + kM0Fc1GradOutputOffset), (int8_t *)(m0_buffer + 29024),
-                                  m0_weight6, fc1_effective_scale, -128, 1568, 128, 1.0f,
-                                  (float *)(m0_buffer + kM0Fc1GradInputOffset),
-                                  (float *)(m0_buffer + kM0Fc1GradWeightOffset),
-                                  (float *)(m0_buffer + kM0Fc1GradBiasOffset));
+        FullyConnectedQASBackward(
+            (float *)(m0_buffer + kM0Fc1GradOutputOffset),
+            (int8_t *)(m0_buffer + 29024), m0_weight6, effective_scale, -128,
+            1568, 128, 1.0f, fc1_grad_input, fc1_grad_weight, fc1_grad_bias);
         printf("4. FullyConnectedQASBackward fc1\n");
-        PrintAndDumpGrads("fc1_grad_input", (float *)(m0_buffer + kM0Fc1GradInputOffset), 1568);
-        PrintAndDumpGrads("fc1_grad_weight", (float *)(m0_buffer + kM0Fc1GradWeightOffset), 128 * 1568);
-        PrintAndDumpGrads("fc1_grad_bias", (float *)(m0_buffer + kM0Fc1GradBiasOffset), 128);
+        PrintAndDumpGrads("fc1_grad_input", fc1_grad_input, 1568);
+        PrintAndDumpGrads("fc1_grad_weight", fc1_grad_weight, 200704);
+        PrintAndDumpGrads("fc1_grad_bias", fc1_grad_bias, 128);
     }
     {
+        float *flatten_grad_output =
+            (float *)(m0_buffer + kM0FlattenGradOutputOffset);
         FlattenNCHWToNHWCBackward((float *)(m0_buffer + kM0Fc1GradInputOffset),
-                                  (float *)(m0_buffer + kM0FlattenGradOutputOffset), 7, 7, 32);
+                                  flatten_grad_output, 7, 7, 32);
         printf("5. FlattenQASBackward\n");
-        PrintAndDumpGrads("flatten_grad_output", (float *)(m0_buffer + kM0FlattenGradOutputOffset), 1568);
+        PrintAndDumpGrads("flatten_grad_output", flatten_grad_output, 1568);
     }
     {
-        MaxPool2x2QASBackwardNHWC((float *)(m0_buffer + kM0FlattenGradOutputOffset), (int8_t *)(m0_buffer + 19616),
-                                  14, 14, 32, (float *)(m0_buffer + kM0Pool2GradInputOffset));
+        float *pool2_grad_input =
+            (float *)(m0_buffer + kM0Pool2GradInputOffset);
+        MaxPool2x2QASBackwardNHWC(
+            (float *)(m0_buffer + kM0FlattenGradOutputOffset),
+            (int8_t *)(m0_buffer + 19616), 14, 14, 32, pool2_grad_input);
         printf("6. MaxPool2x2QASBackward pool2\n");
-        PrintAndDumpGrads("pool2_grad_input", (float *)(m0_buffer + kM0Pool2GradInputOffset), 14 * 14 * 32);
+        PrintAndDumpGrads("pool2_grad_input", pool2_grad_input, 14 * 14 * 32);
     }
     {
-        ReluXQASBackward((float *)(m0_buffer + kM0Pool2GradInputOffset), (int8_t *)(m0_buffer + 19616),
-                         14 * 14 * 32, -128, (float *)(m0_buffer + kM0Relu2GradInputOffset));
+        float *relu2_grad_input =
+            (float *)(m0_buffer + kM0Relu2GradInputOffset);
+        ReluXQASBackward((float *)(m0_buffer + kM0Pool2GradInputOffset),
+                         (int8_t *)(m0_buffer + 19616), 14 * 14 * 32, -128,
+                         relu2_grad_input);
         printf("7. ReluXQASBackward relu2\n");
-        PrintAndDumpGrads("relu2_grad_input", (float *)(m0_buffer + kM0Relu2GradInputOffset), 14 * 14 * 32);
+        PrintAndDumpGrads("relu2_grad_input", relu2_grad_input, 14 * 14 * 32);
+    }
+    {
+        float *conv2_grad_input = (float *)(m0_buffer + kM0Conv2GradInputOffset);
+        float *conv2_grad_weight = (float *)(m0_buffer + kM0Conv2GradWeightOffset);
+        float *conv2_grad_bias = (float *)(m0_buffer + kM0Conv2GradBiasOffset);
+        const float filter_scale[32] = {
+            0.001061098417267203331f, 0.001755995675921440125f,
+            0.00147382635623216629f,  0.001916126580908894539f,
+            0.001847039791755378246f, 0.003189196810126304626f,
+            0.0006622434593737125397f, 0.001426497474312782288f,
+            0.002257649321109056473f, 0.001635198481380939484f,
+            0.001609747298061847687f, 0.002540936926379799843f,
+            0.00109047209843993187f,  0.001098028034903109074f,
+            0.00138328352477401495f,  0.001591973588801920414f,
+            0.0006577332387678325176f, 0.0006995517178438603878f,
+            0.001830157474614679813f, 0.001479517435654997826f,
+            0.001479495316743850708f, 0.0009992128470912575722f,
+            0.0008608305943198502064f, 0.0006631871801801025867f,
+            0.0006408545887097716331f, 0.001267497660592198372f,
+            0.002681609243154525757f, 0.0008311981800943613052f,
+            0.001492832554504275322f, 0.0008290793630294501781f,
+            0.001183047541417181492f, 0.001331280916929244995f};
+        float effective_scale[32];
+        for (int i = 0; i < 32; ++i) {
+            effective_scale[i] =
+                0.01951933093369007111f * filter_scale[i] /
+                0.07039272040128707886f;
+        }
+        Conv2d3x3SameQASBackwardNHWC(
+            (float *)(m0_buffer + kM0Relu2GradInputOffset),
+            (int8_t *)(m0_buffer + 16480), m0_weight12, effective_scale, -128,
+            14, 14, 16, 32, 0.07039272040128707886f, conv2_grad_input,
+            conv2_grad_weight, conv2_grad_bias);
+        printf("8. Conv2d3x3SameQASBackward conv2\n");
+        PrintAndDumpGrads("conv2_grad_input", conv2_grad_input, 14 * 14 * 16);
+        PrintAndDumpGrads("conv2_grad_weight", conv2_grad_weight, 32 * 3 * 3 * 16);
+        PrintAndDumpGrads("conv2_grad_bias", conv2_grad_bias, 32);
+    }
+    {
+        float *pool1_grad_input = (float *)(m0_buffer + kM0Pool1GradInputOffset);
+        MaxPool2x2QASBackwardNHWC(
+            (float *)(m0_buffer + kM0Conv2GradInputOffset),
+            (int8_t *)(m0_buffer + 3936), 28, 28, 16, pool1_grad_input);
+        printf("9. MaxPool2x2QASBackward pool1\n");
+        PrintAndDumpGrads("pool1_grad_input", pool1_grad_input, 28 * 28 * 16);
+    }
+    {
+        float *conv1_grad_output =
+            (float *)(m0_buffer + kM0Conv1GradOutputOffset);
+        ReluXQASBackward((float *)(m0_buffer + kM0Pool1GradInputOffset),
+                         (int8_t *)(m0_buffer + 3936), 28 * 28 * 16, -128,
+                         conv1_grad_output);
+        printf("10. ReluXQASBackward relu1\n");
+        PrintAndDumpGrads("conv1_grad_output", conv1_grad_output, 28 * 28 * 16);
+    }
+    {
+        float *conv1_grad_input = (float *)(m0_buffer + kM0Conv1GradInputOffset);
+        float *conv1_grad_weight = (float *)(m0_buffer + kM0Conv1GradWeightOffset);
+        float *conv1_grad_bias = (float *)(m0_buffer + kM0Conv1GradBiasOffset);
+        const float filter_scale[16] = {
+            0.002160259289667010307f, 0.002494634361937642097f,
+            0.006594839971512556076f, 0.002458167262375354767f,
+            0.00320643116720020771f,  0.004997468087822198868f,
+            0.002034891629591584206f, 0.002970720641314983368f,
+            0.00544007960706949234f,  0.003800980513915419579f,
+            0.003385727526620030403f, 0.002501456532627344131f,
+            0.002993785776197910309f, 0.002527018077671527863f,
+            0.002368648303672671318f, 0.007300233934074640274f};
+        float effective_scale[16];
+        for (int i = 0; i < 16; ++i) {
+            effective_scale[i] =
+                0.003921568859368562698f * filter_scale[i] /
+                0.01951933093369007111f;
+        }
+        Conv2d3x3SameQASBackwardNHWC(
+            (float *)(m0_buffer + kM0Conv1GradOutputOffset),
+            (int8_t *)(m0_buffer + 3136), m0_weight10, effective_scale, -128,
+            28, 28, 1, 16, 0.01951933093369007111f, conv1_grad_input,
+            conv1_grad_weight, conv1_grad_bias);
+        printf("11. Conv2d3x3SameQASBackward conv1\n");
+        PrintAndDumpGrads("conv1_grad_input", conv1_grad_input, 28 * 28);
+        PrintAndDumpGrads("conv1_grad_weight", conv1_grad_weight, 16 * 3 * 3);
+        PrintAndDumpGrads("conv1_grad_bias", conv1_grad_bias, 16);
     }
 }
