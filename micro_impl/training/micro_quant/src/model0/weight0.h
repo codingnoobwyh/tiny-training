@@ -29,10 +29,6 @@
 #include "nnacl_c/int8/transpose_int8.h"
 #include "nnacl_c/kernel/pooling.h"
 #include "nnacl_c/transpose_parameter.h"
-
-#include "nnacl_c/fp32/softmax_fp32.h"
-#include "nnacl_c/fp32_grad/softmax_cross_entropy_with_logits.h"
-
 #include "wrapper/fp32/transpose_fp32_wrapper.h"
 #include "wrapper/int8/matmul_int8_wrapper.h"
 #include "nnacl_c/op_base.h"
@@ -49,16 +45,17 @@ enum STATUS {
 };
 
 extern int m0_thread_num;
-extern int8_t m0_weight10[];  // conv1.weight
-extern int32_t m0_weight11[];  // conv1.bias
-extern int8_t m0_weight12[];  // conv2.weight
-extern int32_t m0_weight13[];  // conv2.bias
+extern const int8_t m0_weight10[];  // 
+extern const int32_t m0_weight11[];  // 
+extern const int8_t m0_weight12[];  // 
+extern const int32_t m0_weight13[];  // 
 extern const int32_t m0_weight14[];  // 
 extern const int32_t m0_weight15[];  // 
-extern int8_t m0_weight6[];  // fc1.weight
-extern int8_t m0_weight8[];  // fc2.weight
+extern const int8_t m0_weight6[];  // fc1.weight
+extern const int8_t m0_weight8[];  // fc2.weight
 /// \brief Init model weight from buffer.
 
 /// \param[in] weight_buffer The address of the weight binary file.
 /// \param[in] weight_size The size of the weight file in bytes.
 int Init0(void *weight_buffer, int weight_size);
+

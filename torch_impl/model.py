@@ -9,18 +9,18 @@ class QasMnistNet(nn.Module):
         super().__init__()
         self.register_buffer("input_scale", torch.tensor(1.0, dtype=torch.float32))
         self.register_buffer("input_zero_point", torch.tensor(0.0, dtype=torch.float32))
-        self.conv1 = QASConv2d(1, 16, kernel_size=3,
+        self.conv1 = QASConv2d(1, 12,
                                zero_x=0.0, zero_y=0.0,
-                               x_scale=1.0, w_scale=torch.ones(16), y_scale=1.0)
+                               x_scale=1.0, w_scale=torch.ones(12), y_scale=1.0)
         self.relu1 = QuantizedReLU()
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.conv2 = QASConv2d(16, 32, kernel_size=3,
+        self.conv2 = QASConv2d(12, 12,
                                zero_x=0.0, zero_y=0.0,
-                               x_scale=1.0, w_scale=torch.ones(32), y_scale=1.0)
+                               x_scale=1.0, w_scale=torch.ones(12), y_scale=1.0)
         self.relu2 = QuantizedReLU()
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.flatten = nn.Flatten()
-        self.fc1 = QASLinear(32 * 7 * 7, 128,
+        self.fc1 = QASLinear(12 * 5 * 5, 128,
                              zero_x=0.0, zero_y=0.0,
                              x_scale=1.0, w_scale=torch.ones(128), y_scale=1.0)
         self.relu3 = QuantizedReLU()
