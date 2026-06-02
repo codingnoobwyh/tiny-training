@@ -105,7 +105,8 @@ static void FlattenNCHWToNHWCBackward(const float *dy,
     for (int h = 0; h < height; ++h) {
         for (int w = 0; w < width; ++w) {
             for (int c = 0; c < channel; ++c) {
-                dx[(h * width + w) * channel + c] = dy[(c * height + h) * width + w];
+                dx[(h * width + w) * channel + c] =
+                    dy[(c * height + h) * width + w];
             }
         }
     }

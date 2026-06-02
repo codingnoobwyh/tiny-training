@@ -12,6 +12,8 @@ set(OP_SRC
     pooling_int8.c.o
     quant_dtype_cast_int8.c.o
     relux_int8.c.o
+    softmax_fp32.c.o
+    softmax_cross_entropy_with_logits.c.o
     transpose_fp32.c.o
     transpose_fp32_wrapper.c.o
     transpose_int8.c.o

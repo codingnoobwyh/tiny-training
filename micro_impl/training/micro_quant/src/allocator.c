@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 #include "src/allocator.h"
+#include "src/model0/net0.h"
 #include "stdatomic.h"
 #include "stdlib.h"
 #include <stdbool.h>
@@ -30,7 +31,7 @@ MemBlock *mem_block = NULL;
   }
 
   void *GlobalMemory() {
-size_t init_size = 16900;
+    size_t init_size = (size_t)GetBufferSize0();
 
     bool expected = false;
     mem_block = malloc(sizeof(MemBlock) + init_size);

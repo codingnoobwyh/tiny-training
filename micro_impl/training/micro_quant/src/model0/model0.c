@@ -24,7 +24,7 @@
 
 MSStatus MSModelBuild0(MSModelHandle model, const void *model_data,
                        size_t data_size, const MSContextHandle model_context);
-MSStatus MSModelResize0(MSModelHandle model, 
+MSStatus MSModelResize0(MSModelHandle model,
                        const MSTensorHandleArray inputs, MSShapeInfo *shape_infos, size_t shape_info_num);
 MSStatus MSModelPredict0(MSModelHandle model, const MSTensorHandleArray inputs,
                          MSTensorHandleArray *output,
@@ -34,8 +34,8 @@ void Reset0();
 void MSModelSetWorkspace0(MSModelHandle model, void *workspace, size_t workspace_size);
 size_t MSModelCalcWorkspaceSize0(MSModelHandle model);
 static MicroModel gModel0 = {.runtime_buffer = NULL,
-                             .train_mode = false,
-                             .inputs = {1, NULL},
+                             .train_mode = true,
+                             .inputs = {2, NULL},
                              .outputs = {1, NULL},
                              .build = MSModelBuild0,
                              .resize = MSModelResize0,
@@ -62,10 +62,10 @@ if (runtime_buffer == NULL) {
     return kMSStatusLiteMemoryFailed;
   }
 
-  micro_model->train_mode = false;
+  micro_model->train_mode = true;
   MSTensorHandleArray model_inputs;
-  model_inputs.handle_num = 1;
-  MicroTensor **input_tensors = malloc(1 * sizeof(MicroTensor *));
+  model_inputs.handle_num = 2;
+  MicroTensor **input_tensors = malloc(2 * sizeof(MicroTensor *));
   model_inputs.handle_list = (MSTensorHandle *)(input_tensors);
   micro_model->inputs = model_inputs;
   input_tensors[0] = malloc(sizeof(MicroTensor));
@@ -80,6 +80,17 @@ if (runtime_buffer == NULL) {
   input_tensors[0]->name = "input";
   input_tensors[0]->data = NULL;
   input_tensors[0]->owned = false;
+
+  input_tensors[1] = malloc(sizeof(MicroTensor));
+  input_tensors[1]->type = kMSDataTypeNumberTypeInt32;
+  input_tensors[1]->format = kMSFormatNHWC;
+  input_tensors[1]->ndim = 1;
+  input_tensors[1]->shape = malloc(sizeof(int64_t));
+  input_tensors[1]->shape[0]= 1;
+  input_tensors[1]->name = "label";
+  input_tensors[1]->data = NULL;
+  input_tensors[1]->owned = false;
+
   MSTensorHandleArray model_outputs;
   model_outputs.handle_num = 1;
   MicroTensor **output_tensors = malloc(1 * sizeof(MicroTensor *));
@@ -178,22 +189,28 @@ MSStatus MSModelPredict0(MSModelHandle model, const MSTensorHandleArray inputs, 
   if (micro_model->runtime_buffer == NULL) {
     return kMSStatusLiteMemoryFailed;
   }
-  if (inputs.handle_num != 1) {
+  if (inputs.handle_num != 2) {
     return kMSStatusLiteParamInvalid;
   }
   if (outputs->handle_num != 1) {
     return kMSStatusLiteParamInvalid;
   }
-  const void *inputs_data_array[1];
-  int expect_types[1] = {43, };
-  bool type_changed[1] = {false, };
-  for (int i = 0; i < 1; i++) {
+  const void *inputs_data_array[2];
+  int expect_types[2] = {43, 34, };
+  bool type_changed[2] = {false, false, };
+  for (int i = 0; i < 2; i++) {
     inputs_data_array[i] = TransformInput((MicroTensor *)inputs.handle_list[i], expect_types[i], &type_changed[i]);
+    if (inputs_data_array[i] == NULL) {
+      return kMSStatusLiteParamInvalid;
+    }
   }
-  SetInputs0(inputs_data_array, 1);
+  int set_input_ret = SetInputs0(inputs_data_array, 2);
+  if (set_input_ret != RET_OK) {
+    return kMSStatusLiteParamInvalid;
+  }
   Execute0(micro_model->train_mode);
 
-  for (int i = 0; i < 1; i++) {
+  for (int i = 0; i < 2; i++) {
     if (type_changed[i]) {
       free((void *)inputs_data_array[i]);
     }
