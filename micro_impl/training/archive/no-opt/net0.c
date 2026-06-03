@@ -69,6 +69,7 @@ static void PrintAndDumpGrads(const char *name, const float *data, int length) {
 #else
 
 #define PrintAndDumpGrads(name, data, length) ((void)0)
+#define printf ((void)0)
 
 #endif
 

@@ -2,6 +2,8 @@
 cmake_minimum_required(VERSION 3.14)
 project(micro_lib)
 
+add_compile_definitions(BENCHMARK)
+
 set(OP_LIB "/home/w00955485/hispark_ai/src/mindspore-lite/output/mindspore-lite-2.8.0-linux-x64/tools/codegen/lib/cpu/libnnacl.a")
 set(WRAPPER_LIB "/home/w00955485/hispark_ai/src/mindspore-lite/output/mindspore-lite-2.8.0-linux-x64/tools/codegen/lib/cpu/libwrapper.a")
 set(MS_ROOT_DIR "/home/w00955485/hispark_ai/src/mindspore-lite/output/mindspore-lite-2.8.0-linux-x64")

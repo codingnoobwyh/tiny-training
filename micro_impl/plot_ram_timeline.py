@@ -11,8 +11,15 @@ DEFAULT_SOURCES = [
 
 PALETTE = {
     "free": "#f1f5f9",
+    "chain free": "#eef2ff",
+    "grad free": "#f8fafc",
     "gap": "#e2e8f0",
+    "dead": "#94a3b8",
+    "dead fp32": "#94a3b8",
+    "dead q": "#94a3b8",
     "old fp32": "#cbd5e1",
+    "old conv1": "#94a3b8",
+    "old conv2": "#94a3b8",
     "old tmp": "#cbd5e1",
     "old FC1": "#cbd5e1",
     "old int8": "#cbd5e1",
@@ -34,35 +41,16 @@ PALETTE = {
     "fp32 logits": "#f87171",
     "sum": "#14b8a6",
     "CE": "#fda4af",
+    "CE free": "#fee2e2",
     "CE old": "#fecdd3",
+    "chain_buf": "#c7d2fe",
+    "grad_buf": "#bfdbfe",
     "labels": "#fb7185",
     "prob": "#f43f5e",
-    "grad logits": "#e11d48",
-    "fc2 grads": "#c084fc",
-    "fc2 grad in": "#d8b4fe",
-    "fc2 grad weight": "#c084fc",
-    "fc2 grad bias": "#a855f7",
-    "fc1 grads": "#93c5fd",
-    "fc1 grad out": "#bfdbfe",
-    "fc1 grad in": "#93c5fd",
-    "fc1 grad bias": "#60a5fa",
-    "fc1 grad weight": "#3b82f6",
-    "flatten grad": "#6ee7b7",
-    "pool2 grad": "#34d399",
-    "pool2 grad input": "#34d399",
-    "relu2 grad": "#2dd4bf",
-    "relu2 grad input": "#2dd4bf",
-    "conv2 grads": "#facc15",
-    "conv2 grad input": "#fde047",
-    "conv2 grad weight": "#eab308",
-    "conv2 grad bias": "#ca8a04",
-    "pool1 grad": "#fdba74",
-    "pool1 grad input": "#fdba74",
-    "conv1 out grad": "#fb923c",
-    "conv1 grads": "#f97316",
-    "conv1 grad input": "#fb923c",
-    "conv1 grad weight": "#ea580c",
-    "conv1 grad bias": "#c2410c",
+    "dx": "#22c55e",
+    "dy": "#ef4444",
+    "dw": "#3b82f6",
+    "db": "#f59e0b",
     "momentum": "#64748b",
 }
 
@@ -93,18 +81,33 @@ def format_bytes(value, _pos=None):
     return str(int(value))
 
 
+def should_make_callout(name):
+    hidden_prefixes = ("old ", "dead")
+    hidden_names = {"free", "chain free", "grad free", "gap"}
+    return name not in hidden_names and not name.startswith(hidden_prefixes)
+
+
+def should_draw_segment(name):
+    return name != "gap"
+
+
 def draw_group(ax, source_name, group, xlim=None, title=None):
     row_height = 0.72
     rows = group["rows"]
     total_size = group["total_size"]
-    label_threshold = (xlim or total_size) * 0.035
+    x_max = xlim or total_size
+    label_threshold = x_max * 0.035
     y_positions = list(range(len(rows)))[::-1]
+    small_segment_names = []
 
     for y, row in zip(y_positions, rows):
         for name, start, end in row["segments"]:
             width = end - start
             if width <= 0:
                 raise ValueError(f"bad segment {source_name}/{row['name']}: {name} {start}..{end}")
+            if not should_draw_segment(name):
+                continue
+            is_callout = width < label_threshold and should_make_callout(name)
             ax.broken_barh(
                 [(start, width)],
                 (y - row_height / 2, row_height),
@@ -123,15 +126,37 @@ def draw_group(ax, source_name, group, xlim=None, title=None):
                     color="#0f172a",
                     clip_on=True,
                 )
+            elif is_callout:
+                small_segment_names.append(name)
 
     ax.set_title(title or f"{source_name}: {group['title']} ({total_size} bytes)", fontsize=11)
-    ax.set_xlim(0, xlim or total_size)
+    ax.set_xlim(0, x_max)
     ax.set_ylim(-0.8, len(rows) - 0.2)
     ax.set_yticks(y_positions)
     ax.set_yticklabels([row["name"] for row in rows], fontsize=8)
     ax.grid(axis="x", color="#cbd5e1", linewidth=0.6, alpha=0.8)
     ax.set_xlabel("m0_buffer offset / bytes")
     ax.xaxis.set_major_formatter(format_bytes)
+    if small_segment_names:
+        from matplotlib.patches import Patch
+
+        seen = set()
+        handles = []
+        for name in small_segment_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            handles.append(Patch(facecolor=color_for(name), edgecolor="#334155", label=name))
+        ax.legend(
+            handles=handles,
+            loc="upper left",
+            bbox_to_anchor=(-0.18, 1.0),
+            fontsize=7,
+            frameon=True,
+            borderaxespad=0.0,
+            handlelength=1.2,
+            handleheight=0.9,
+        )
 
 
 def resolve_output(base_dir, output):
@@ -164,9 +189,8 @@ def plot_reuse_compare(base_dir, modules, output):
     fig, axes = plt.subplots(
         2,
         1,
-        figsize=(18, 10),
+        figsize=(24, 10),
         sharex=True,
-        constrained_layout=True,
     )
     draw_group(
         axes[0],
@@ -182,6 +206,7 @@ def plot_reuse_compare(base_dir, modules, output):
         xlim=xlim,
         title=f"with reuse: inference forward timeline ({inference_reuse['total_size']} bytes)",
     )
+    fig.subplots_adjust(left=0.19, right=0.98, top=0.94, bottom=0.08, hspace=0.18)
     save_figure(fig, base_dir, output)
     return fig
 
@@ -191,13 +216,14 @@ def plot_training_only(base_dir, modules, output):
 
     training_backward = modules["training"].SEGMENT_GROUPS[1]
     height = max(4.0, len(training_backward["rows"]) * 0.38 + 1.0)
-    fig, ax = plt.subplots(1, 1, figsize=(18, height), constrained_layout=True)
+    fig, ax = plt.subplots(1, 1, figsize=(24, height))
     draw_group(
         ax,
         "training",
         training_backward,
         title=f"training backward and update timeline ({training_backward['total_size']} bytes)",
     )
+    fig.subplots_adjust(left=0.19, right=0.98, top=0.9, bottom=0.12)
     save_figure(fig, base_dir, output)
     return fig
 
@@ -209,9 +235,8 @@ def plot_all(base_dir, groups, output):
     fig, axes = plt.subplots(
         len(groups),
         1,
-        figsize=(18, sum(heights)),
+        figsize=(24, sum(heights)),
         gridspec_kw={"height_ratios": heights},
-        constrained_layout=True,
     )
     if len(groups) == 1:
         axes = [axes]
@@ -219,6 +244,7 @@ def plot_all(base_dir, groups, output):
     for ax, (source_name, group) in zip(axes, groups):
         draw_group(ax, source_name, group)
 
+    fig.subplots_adjust(left=0.19, right=0.98, top=0.96, bottom=0.05, hspace=0.35)
     save_figure(fig, base_dir, output)
     return fig
 
