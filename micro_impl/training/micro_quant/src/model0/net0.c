@@ -73,20 +73,17 @@ static void PrintAndDumpGrads(const char *name, const float *data, int length) {
 
 #endif
 
-static void FullyConnectedQASBackward(const float *dy,
-                                      const int8_t *input, const int8_t *weight,
-                                      const float *effective_scale,
-                                      int input_zp, int input_size,
-                                      int output_size,
-                                      float *dx, float *dw,
-                                      float *db) {
-    for (int o = 0; o < output_size; ++o) {
+static void FcCalcGradTiled(const float *dy, const int8_t *x, const int8_t *weight, const float *effective_scale,
+                            int input_zp, int input_size, int o_start, int tile_size, float *dx, float *dw_tile,
+                            float *db_tile) {
+    for (int t = 0; t < tile_size; ++t) {
+        int o = o_start + t;
         float dlinear_out = dy[o] * effective_scale[o];
-        db[o] = dlinear_out;
+        db_tile[t] = dlinear_out;
         for (int i = 0; i < input_size; ++i) {
-            int input_centered = (int)input[i] - input_zp;
+            int input_centered = (int)x[i] - input_zp;
             int weight_centered = (int)weight[o * input_size + i];
-            dw[o * input_size + i] = dlinear_out * (float)input_centered;
+            dw_tile[t * input_size + i] = dlinear_out * (float)input_centered;
             dx[i] += dlinear_out * (float)weight_centered;
         }
     }
@@ -201,19 +198,28 @@ static void ZeroFloatBuffer(float *data, int length) {
     }
 }
 
-static void QASSGDUpdateInt8Weight(int8_t *weight, float *momentum,
-                                   const float *d, const float *w_scale,
-                                   int output_size, int inner_size,
-                                   float learning_rate, float momentum_value) {
-    for (int o = 0; o < output_size; ++o) {
+static void FcUpdateWeightTile(int8_t *weight, float *momentum, const float *dw_tile, const float *w_scale,
+                               int o_start, int tile_size, int input_size, float learning_rate, float momentum_value) {
+    for (int t = 0; t < tile_size; ++t) {
+        int o = o_start + t;
         float inv_scale_sq = 1.0f / (w_scale[o] * w_scale[o]);
-        for (int i = 0; i < inner_size; ++i) {
-            int index = o * inner_size + i;
-            float scaled_d = d[index] * inv_scale_sq;
+        for (int i = 0; i < input_size; ++i) {
+            int index = o * input_size + i;
+            float scaled_d = dw_tile[t * input_size + i] * inv_scale_sq;
             momentum[index] = momentum[index] * momentum_value + scaled_d;
-            weight[index] = RoundClampInt8((float)weight[index] -
-                                           learning_rate * momentum[index]);
+            weight[index] = RoundClampInt8((float)weight[index] - learning_rate * momentum[index]);
         }
+    }
+}
+
+static void FcUpdateBiasTile(int32_t *bias, float *momentum, const float *db_tile, const float *w_scale, float x_scale,
+                             int o_start, int tile_size, float learning_rate, float momentum_value) {
+    for (int t = 0; t < tile_size; ++t) {
+        int o = o_start + t;
+        float bias_scale = x_scale * w_scale[o];
+        float scaled_d = db_tile[t] / (bias_scale * bias_scale);
+        momentum[o] = momentum[o] * momentum_value + scaled_d;
+        bias[o] = RoundClampInt32((float)bias[o] - learning_rate * momentum[o]);
     }
 }
 
@@ -267,10 +273,10 @@ int SetInputs0(const void **inputs, int num) {
     m0_label0 = *((const int32_t *)inputs[1]);
     return RET_OK;
 }
-int GetBufferSize0() { return 16900 + 359656; }
+int GetBufferSize0() { return 16900 + 212768; }
 int SetBuffer0(void *buffer) {
     m0_buffer = (unsigned char *)buffer;
-    ZeroFloatBuffer((float *)(m0_buffer + 211572), 41246);
+    ZeroFloatBuffer((float *)(m0_buffer + 64684), 41246);
     return RET_OK;
 }
 void FreeResource0() {
@@ -738,7 +744,7 @@ void Execute0(bool train_mode) {
         float *const chain_buf = (float *)(m0_buffer + 16900);
         const int chain_sz = 10140;
         float *const grad_buf = (float *)(m0_buffer + 57460);
-        float *const momentum = (float *)(m0_buffer + 211572);
+        float *const momentum = (float *)(m0_buffer + 64684);
         float *dy, *dx;
 
         /* ===== 1. CE loss ===== */
@@ -773,18 +779,17 @@ void Execute0(bool train_mode) {
             dy = chain_buf + chain_sz - 10;     /* high end */
             dx = chain_buf;                     /* low end */
             ZeroFloatBuffer(dx, 128);
-            FullyConnectedQASBackward(dy, (int8_t *)(m0_buffer + 16672),
-                                     m0_weight8, eff, -128, 128, 10,
-                                     dx, grad_buf, grad_buf + 1280);
+            float *dw_tile = grad_buf;
+            float *db_tile = grad_buf + 10 * 128;
+            FcCalcGradTiled(dy, (int8_t *)(m0_buffer + 16672),
+                              m0_weight8, eff, -128, 128, 0, 10,
+                              dx, dw_tile, db_tile);
             printf("2. fc2 backward+update\n");
             PrintAndDumpGrads("fc2_dx", dx, 128);
-            PrintAndDumpGrads("fc2_dw", grad_buf, 1280);
-            PrintAndDumpGrads("fc2_db", grad_buf + 1280, 10);
-            QASSGDUpdateInt8Weight(m0_weight8, momentum + 39956, grad_buf,
-                                   filter_scale, 10, 128, lr, mv);
-            QASSGDUpdateInt32Bias(m0_weight15, momentum + 41236,
-                                  grad_buf + 1280, filter_scale,
-                                  0.05965540185570716858f, 10, lr, mv);
+            FcUpdateWeightTile(m0_weight8, momentum + 39956, dw_tile,
+                               filter_scale, 0, 10, 128, lr, mv);
+            FcUpdateBiasTile(m0_weight15, momentum + 41236, db_tile,
+                             filter_scale, 0.05965540185570716858f, 0, 10, lr, mv);
         }
 
         /* ===== 3. relu3 backward (in-place at low) ===== */
@@ -867,18 +872,32 @@ void Execute0(bool train_mode) {
             dy = chain_buf;                     /* low end */
             dx = chain_buf + chain_sz - 300;    /* high end */
             ZeroFloatBuffer(dx, 300);
-            FullyConnectedQASBackward(dy, (int8_t *)(m0_buffer + 16224),
-                                     m0_weight6, eff, -128, 300, 128,
-                                     dx, grad_buf, grad_buf + 38400);
+            const int tile_size = 6;
+            float *dw_tile = grad_buf;
+            float *db_tile = grad_buf + tile_size * 300;
+            int o;
+            for (o = 0; o < 126; o += tile_size) {  /* 21 full tiles */
+                FcCalcGradTiled(dy, (int8_t *)(m0_buffer + 16224),
+                                  m0_weight6, eff, -128, 300,
+                                  o, tile_size,
+                                  dx, dw_tile, db_tile);
+                FcUpdateWeightTile(m0_weight6, momentum + 1428, dw_tile,
+                                   filter_scale, o, tile_size, 300, lr, mv);
+                FcUpdateBiasTile(m0_weight14, momentum + 39828, db_tile,
+                                 filter_scale, 0.09529870003461837769f,
+                                 o, tile_size, lr, mv);
+            }
+            /* tail: o=126, size=2 */
+            FcCalcGradTiled(dy, (int8_t *)(m0_buffer + 16224),
+                              m0_weight6, eff, -128, 300,
+                              126, 2, dx, dw_tile, db_tile);
+            FcUpdateWeightTile(m0_weight6, momentum + 1428, dw_tile,
+                               filter_scale, 126, 2, 300, lr, mv);
+            FcUpdateBiasTile(m0_weight14, momentum + 39828, db_tile,
+                             filter_scale, 0.09529870003461837769f,
+                             126, 2, lr, mv);
             printf("4. fc1 backward+update\n");
             PrintAndDumpGrads("fc1_dx", dx, 300);
-            PrintAndDumpGrads("fc1_dw", grad_buf, 38400);
-            PrintAndDumpGrads("fc1_db", grad_buf + 38400, 128);
-            QASSGDUpdateInt8Weight(m0_weight6, momentum + 1428, grad_buf,
-                                   filter_scale, 128, 300, lr, mv);
-            QASSGDUpdateInt32Bias(m0_weight14, momentum + 39828,
-                                  grad_buf + 38400, filter_scale,
-                                  0.09529870003461837769f, 128, lr, mv);
         }
 
         /* ===== 5. flatten backward ===== */
